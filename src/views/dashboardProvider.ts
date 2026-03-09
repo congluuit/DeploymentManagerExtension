@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import { VercelClient } from '../clients/vercelClient';
 import { CoolifyClient } from '../clients/coolifyClient';
 import { NetlifyClient } from '../clients/netlifyClient';
@@ -211,17 +211,17 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
 
         // Children of each section
         switch (element.label) {
-            case '📦 Current Project':
+            case 'Current Project':
                 return this.getProjectItems();
-            case '🔗 Providers':
+            case 'Providers':
                 return this.getProviderItems();
-            case '▲ Vercel Projects':
+            case 'Vercel Projects':
                 return this.getVercelProjectItems();
-            case '🧊 Coolify Applications':
-                return this.getCoolifyAppItems();
-            case '◼ Netlify Sites':
+            case 'Netlify Sites':
                 return this.getNetlifySiteItems();
-            case '⚡ Actions':
+            case 'Coolify Apps (Self-Host)':
+                return this.getCoolifyAppItems();
+            case 'General Actions':
                 return this.getActionItems();
             default:
                 return [];
@@ -230,30 +230,30 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
 
     private getRootItems(): DashboardItem[] {
         const items: DashboardItem[] = [
-            new DashboardItem('📦 Current Project', 'header', vscode.TreeItemCollapsibleState.Expanded),
-            new DashboardItem('🔗 Providers', 'header', vscode.TreeItemCollapsibleState.Expanded),
+            new DashboardItem('Current Project', 'header', vscode.TreeItemCollapsibleState.Expanded),
+            new DashboardItem('Providers', 'header', vscode.TreeItemCollapsibleState.Expanded),
         ];
 
         if (this.vercelConnected) {
             items.push(
-                new DashboardItem('▲ Vercel Projects', 'header', vscode.TreeItemCollapsibleState.Collapsed)
-            );
-        }
-
-        if (this.coolifyConnected) {
-            items.push(
-                new DashboardItem('🧊 Coolify Applications', 'header', vscode.TreeItemCollapsibleState.Collapsed)
+                new DashboardItem('Vercel Projects', 'header', vscode.TreeItemCollapsibleState.Collapsed)
             );
         }
 
         if (this.netlifyConnected) {
             items.push(
-                new DashboardItem('◼ Netlify Sites', 'header', vscode.TreeItemCollapsibleState.Collapsed)
+                new DashboardItem('Netlify Sites', 'header', vscode.TreeItemCollapsibleState.Collapsed)
+            );
+        }
+
+        if (this.coolifyConnected) {
+            items.push(
+                new DashboardItem('Coolify Apps (Self-Host)', 'header', vscode.TreeItemCollapsibleState.Collapsed)
             );
         }
 
         items.push(
-            new DashboardItem('⚡ Actions', 'header', vscode.TreeItemCollapsibleState.Expanded)
+            new DashboardItem('General Actions', 'header', vscode.TreeItemCollapsibleState.Expanded)
         );
 
         return items;
@@ -300,7 +300,7 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         if (this.projectExistsOnNetlify) { providers.push('Netlify'); }
 
         const statusText = existsRemotely
-            ? `Status: Deployed (${providers.join(', ')})`
+            ? `Status: Deployed in ${providers.join(', ')}`
             : 'Status: Not Deployed';
         const statusItem = new DashboardItem(
             statusText,
@@ -319,7 +319,7 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         const items: DashboardItem[] = [];
 
         const vercelItem = new DashboardItem(
-            this.vercelConnected ? 'Vercel ✅ Connected' : 'Vercel ❌ Not Connected',
+            this.vercelConnected ? 'Vercel Connected' : 'Vercel Not Connected',
             this.vercelConnected ? 'providerStatus' : 'connectAction',
             vscode.TreeItemCollapsibleState.None
         );
@@ -332,7 +332,7 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         items.push(vercelItem);
 
         const coolifyItem = new DashboardItem(
-            this.coolifyConnected ? 'Coolify ✅ Connected' : 'Coolify ❌ Not Connected',
+            this.coolifyConnected ? 'Coolify Connected' : 'Coolify Not Connected',
             this.coolifyConnected ? 'providerStatus' : 'connectAction',
             vscode.TreeItemCollapsibleState.None
         );
@@ -345,7 +345,7 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         items.push(coolifyItem);
 
         const netlifyItem = new DashboardItem(
-            this.netlifyConnected ? 'Netlify ✅ Connected' : 'Netlify ❌ Not Connected',
+            this.netlifyConnected ? 'Netlify Connected' : 'Netlify Not Connected',
             this.netlifyConnected ? 'providerStatus' : 'connectAction',
             vscode.TreeItemCollapsibleState.None
         );
@@ -434,28 +434,15 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
             return items;
         }
 
-        const existsRemotely = this.projectExistsOnVercel || this.projectExistsOnCoolify || this.projectExistsOnNetlify;
-
-        if (!existsRemotely) {
-            items.push(
-                new DashboardItem(
-                    '🚀 Deploy Project',
-                    'deployAction',
-                    vscode.TreeItemCollapsibleState.None
-                )
-            );
-        }
-
-        if (existsRemotely) {
-            items.push(
-                new DashboardItem(
-                    '🔄 Redeploy Project',
-                    'redeployAction',
-                    vscode.TreeItemCollapsibleState.None
-                )
-            );
-        }
+        items.push(
+            new DashboardItem(
+                'Deploy Project',
+                'deployAction',
+                vscode.TreeItemCollapsibleState.None
+            )
+        );
 
         return items;
     }
 }
+

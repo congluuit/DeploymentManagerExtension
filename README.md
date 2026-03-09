@@ -7,10 +7,12 @@ Manage cloud deployments directly inside your editor.
 
 - Activity Bar icon for quick access
 - Dashboard TreeView + rich Dashboard tab
-- Vercel integration: list projects, deploy, redeploy, view deployment logs
-- Coolify integration: list applications, deploy, redeploy, view logs
-- Netlify integration: list sites, deploy, redeploy, view deploy/build logs
-- Duplicate deploy prevention (deploy only for new projects)
+- Vercel integration: list projects, deploy, redeploy, import `.env`, visit site, view deployment logs
+- Coolify integration: list applications, deploy, redeploy, import `.env`, visit site, view logs
+- Netlify integration: list sites, deploy, redeploy, import `.env`, visit site, view deploy/build logs
+- Per-provider resource section refresh in Managed Resources (refresh only that section)
+- Deploy action always available, with provider selection at deploy time
+- Current workspace status shows deployed providers (for example: `Deployed in Netlify, Vercel`)
 - GitHub commit watcher with deploy/redeploy prompts
 - Secure credential storage via VSCode SecretStorage
 

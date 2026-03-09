@@ -44,10 +44,7 @@ const PROVIDER_CONNECTION_KEYS = {
     Coolify: types_1.StorageKeys.COOLIFY_TOKEN,
     Netlify: types_1.StorageKeys.NETLIFY_TOKEN,
 };
-/**
- * Deploy a project that does not yet exist remotely.
- * Enforces the "deploy only if new" rule.
- */
+/** Deploy a project to a selected connected provider. */
 async function deployProject() {
     const detector = new projectDetector_1.ProjectDetector();
     const projectInfo = await detector.detect();
@@ -66,22 +63,17 @@ async function deployProject() {
         vscode.window.showErrorMessage('No deployment providers connected. Please connect Vercel, Coolify, or Netlify first.');
         return;
     }
-    const existingProviders = [];
+    const existingByProvider = new Map();
     for (const providerName of connectedProviders) {
         const adapter = (0, providers_1.getProvider)(providerName);
         const existing = await adapter.findExistingProject(projectInfo);
-        if (existing) {
-            existingProviders.push(providerName);
-        }
-    }
-    if (existingProviders.length > 0) {
-        const list = existingProviders.join(', ');
-        vscode.window.showWarningMessage(`Project "${projectInfo.name}" already exists on ${list}. Use Redeploy instead.`);
-        return;
+        existingByProvider.set(providerName, existing);
     }
     const selected = await vscode.window.showQuickPick(connectedProviders.map((provider) => ({
         label: provider,
-        description: `Deploy to ${provider}`,
+        description: existingByProvider.get(provider)
+            ? `Already exists on ${provider}`
+            : `Deploy to ${provider}`,
     })), {
         placeHolder: 'Select deployment provider',
         ignoreFocusOut: true,
@@ -96,6 +88,11 @@ async function deployProject() {
     }, async () => {
         try {
             const provider = selected.label;
+            const existing = existingByProvider.get(provider);
+            if (existing) {
+                vscode.window.showWarningMessage(`Project "${projectInfo.name}" already exists on ${provider}. Use Redeploy for that provider.`);
+                return;
+            }
             const adapter = (0, providers_1.getProvider)(provider);
             await adapter.createProject(projectInfo);
             vscode.window.showInformationMessage(`Project "${projectInfo.name}" created on ${provider}.`);

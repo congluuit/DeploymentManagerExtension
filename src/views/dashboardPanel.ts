@@ -53,6 +53,7 @@ interface DashboardWebviewMessage {
     command:
     | 'refresh'
     | 'checkGitUpdates'
+    | 'refreshProviderResources'
     | 'connectVercel'
     | 'connectCoolify'
     | 'connectNetlify'
@@ -72,6 +73,7 @@ interface DashboardWebviewMessage {
     imported?: number;
     error?: string;
     sectionBodyHtml?: string;
+    providerSectionHtml?: string;
     latestCommitLabel?: string;
 }
 
@@ -167,6 +169,34 @@ export class DashboardPanel {
                     const text = error instanceof Error ? error.message : String(error);
                     this.panel.webview.postMessage({
                         command: 'checkGitUpdatesResult',
+                        requestId: message.requestId,
+                        success: false,
+                        error: text,
+                    });
+                }
+                return;
+            case 'refreshProviderResources':
+                if (!message.requestId || !this.isProviderName(message.provider)) {
+                    this.panel.webview.postMessage({
+                        command: 'refreshProviderResourcesResult',
+                        requestId: message.requestId,
+                        success: false,
+                        error: 'Missing provider metadata for section refresh.',
+                    });
+                    return;
+                }
+                try {
+                    const data = await this.collectData();
+                    this.panel.webview.postMessage({
+                        command: 'refreshProviderResourcesResult',
+                        requestId: message.requestId,
+                        success: true,
+                        providerSectionHtml: this.getManagedProviderSectionHtml(message.provider, data),
+                    });
+                } catch (error) {
+                    const text = error instanceof Error ? error.message : String(error);
+                    this.panel.webview.postMessage({
+                        command: 'refreshProviderResourcesResult',
                         requestId: message.requestId,
                         success: false,
                         error: text,
@@ -569,6 +599,12 @@ export class DashboardPanel {
             }
         }
 
+        if (projectInfo) {
+            projectExistsOnVercel = projectExistsOnVercel || this.matchesWorkspaceOnVercel(projectInfo, vercelProjects);
+            projectExistsOnCoolify = projectExistsOnCoolify || this.matchesWorkspaceOnCoolify(projectInfo, coolifyApps);
+            projectExistsOnNetlify = projectExistsOnNetlify || this.matchesWorkspaceOnNetlify(projectInfo, netlifySites);
+        }
+
         activity.sort((a, b) => b.timestamp - a.timestamp);
         const trimmedActivity = activity.slice(0, 20);
 
@@ -802,6 +838,63 @@ export class DashboardPanel {
         return `https://${first}`;
     }
 
+    private matchesWorkspaceOnVercel(projectInfo: ProjectInfo, projects: VercelProject[]): boolean {
+        const workspaceName = projectInfo.name.trim().toLowerCase();
+        const workspaceRepo = this.normalizeRepoIdentifier(projectInfo.repoUrl);
+
+        return projects.some((project) => {
+            const sameName = project.name.trim().toLowerCase() === workspaceName;
+            const projectRepo = this.normalizeRepoIdentifier(project.link?.repo);
+            const sameRepo = !!workspaceRepo && !!projectRepo && workspaceRepo === projectRepo;
+            return sameName || sameRepo;
+        });
+    }
+
+    private matchesWorkspaceOnCoolify(projectInfo: ProjectInfo, apps: CoolifyApplication[]): boolean {
+        const workspaceName = projectInfo.name.trim().toLowerCase();
+        const workspaceRepo = this.normalizeRepoIdentifier(projectInfo.repoUrl);
+
+        return apps.some((app) => {
+            const sameName = app.name.trim().toLowerCase() === workspaceName;
+            const appRepo = this.normalizeRepoIdentifier(app.git_repository);
+            const sameRepo = !!workspaceRepo && !!appRepo && workspaceRepo === appRepo;
+            return sameName || sameRepo;
+        });
+    }
+
+    private matchesWorkspaceOnNetlify(projectInfo: ProjectInfo, sites: NetlifySite[]): boolean {
+        const workspaceName = projectInfo.name.trim().toLowerCase();
+        const workspaceRepo = this.normalizeRepoIdentifier(projectInfo.repoUrl);
+
+        return sites.some((site) => {
+            const sameName = site.name.trim().toLowerCase() === workspaceName;
+            const repoCandidates = [
+                site.repo?.repo_url,
+                site.build_settings?.repo_url,
+                site.repo?.repo_path,
+                site.build_settings?.repo_path,
+            ];
+            const sameRepo = repoCandidates.some((candidate) => {
+                const normalized = this.normalizeRepoIdentifier(candidate);
+                return !!workspaceRepo && !!normalized && workspaceRepo === normalized;
+            });
+            return sameName || sameRepo;
+        });
+    }
+
+    private normalizeRepoIdentifier(value: string | null | undefined): string | null {
+        if (!value || !value.trim()) {
+            return null;
+        }
+
+        return value
+            .trim()
+            .replace(/^https?:\/\//i, '')
+            .replace(/^git@github\.com:/i, 'github.com/')
+            .replace(/\.git$/i, '')
+            .toLowerCase();
+    }
+
     private async getLatestVercelDeployment(
         vercel: VercelClient | null,
         projectId: string
@@ -891,13 +984,13 @@ export class DashboardPanel {
         return `
             <li class="resource-item">
                 <div class="resource-meta">
-                    <strong>${DashboardPanel.escapeHtml(item.projectName)}</strong>
-                    <small>${DashboardPanel.escapeHtml(item.detailLabel)}</small>
+                    <strong class="resource-title">${DashboardPanel.escapeHtml(item.projectName)}</strong>
+                    <small class="resource-subtitle">${DashboardPanel.escapeHtml(item.detailLabel)}</small>
                     <span class="git-pill ${stateClass}" id="git-status-${index}">${DashboardPanel.escapeHtml(item.deploymentStatusLabel)}</span>
                 </div>
                 <div class="resource-actions">
                     <button
-                        class="ghost-btn"
+                        class="ghost-btn resource-btn"
                         data-action="visit-site"
                         data-provider="${DashboardPanel.escapeHtml(item.provider)}"
                         data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
@@ -906,7 +999,7 @@ export class DashboardPanel {
                         type="button"
                     >Visit Site</button>
                     <button
-                        class="ghost-btn"
+                        class="ghost-btn resource-btn"
                         data-action="import-env"
                         data-provider="${DashboardPanel.escapeHtml(item.provider)}"
                         data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
@@ -915,7 +1008,7 @@ export class DashboardPanel {
                         type="button"
                     >Import .env</button>
                     <button
-                        class="ghost-btn redeploy-resource-btn"
+                        class="ghost-btn redeploy-resource-btn resource-btn"
                         data-action="redeploy-resource"
                         data-provider="${DashboardPanel.escapeHtml(item.provider)}"
                         data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
@@ -931,44 +1024,70 @@ export class DashboardPanel {
     }
 
     private getManagedResourcesBodyHtml(data: DashboardPanelData): string {
-        const vercelManaged = data.managedResources.filter((item) => item.provider === 'Vercel');
-        const coolifyManaged = data.managedResources.filter((item) => item.provider === 'Coolify');
-        const netlifyManaged = data.managedResources.filter((item) => item.provider === 'Netlify');
-
-        const vercelList = vercelManaged.length
-            ? vercelManaged.map((item, index) => this.getManagedResourceRowHtml(item, index)).join('')
-            : '<li class="muted">No Vercel projects found.</li>';
-
-        const coolifyList = coolifyManaged.length
-            ? coolifyManaged.map((item, index) => this.getManagedResourceRowHtml(item, index + 100)).join('')
-            : '<li class="muted">No Coolify apps found.</li>';
-
-        const netlifyList = netlifyManaged.length
-            ? netlifyManaged.map((item, index) => this.getManagedResourceRowHtml(item, index + 200)).join('')
-            : '<li class="muted">No Netlify sites found.</li>';
-
         return `
             <div class="resource-grid">
-                <div>
-                    <h3>Vercel Projects (${data.vercelProjects.length})</h3>
-                    <ul>${vercelList}</ul>
-                </div>
-                <div>
-                    <h3>Coolify Apps (${data.coolifyApps.length})</h3>
-                    <ul>${coolifyList}</ul>
-                </div>
-                <div>
-                    <h3>Netlify Sites (${data.netlifySites.length})</h3>
-                    <ul>${netlifyList}</ul>
-                </div>
+                ${this.getManagedProviderSectionHtml('Vercel', data)}
+                ${this.getManagedProviderSectionHtml('Netlify', data)}
+                ${this.getManagedProviderSectionHtml('Coolify', data)}
             </div>
             <div class="footer-note">Last updated: ${DashboardPanel.escapeHtml(data.generatedAt)}</div>
+        `;
+    }
+
+    private getManagedProviderSectionHtml(provider: ProviderName, data: DashboardPanelData): string {
+        const filtered = data.managedResources.filter((item) => item.provider === provider);
+        const offset = provider === 'Vercel' ? 0 : provider === 'Netlify' ? 100 : 200;
+        const list = filtered.length
+            ? filtered.map((item, index) => this.getManagedResourceRowHtml(item, index + offset)).join('')
+            : provider === 'Vercel'
+                ? '<li class="muted">No Vercel projects found.</li>'
+                : provider === 'Coolify'
+                    ? '<li class="muted">No Coolify apps found.</li>'
+                    : '<li class="muted">No Netlify sites found.</li>';
+
+        const title = provider === 'Vercel'
+            ? 'Vercel Projects'
+            : provider === 'Netlify'
+                ? 'Netlify Sites'
+                : 'Coolify Apps (Self-Host)';
+
+        const count = provider === 'Vercel'
+            ? data.vercelProjects.length
+            : provider === 'Coolify'
+                ? data.coolifyApps.length
+                : data.netlifySites.length;
+
+        return `
+            <div class="provider-resource-section" data-provider-section="${provider}">
+                <div class="provider-section-head">
+                    <h3>${title} (<span data-provider-count="${provider}">${count}</span>)</h3>
+                    <button
+                        class="ghost-btn section-refresh-btn"
+                        data-action="refresh-provider-resources"
+                        data-provider="${provider}"
+                        type="button"
+                        title="Refresh ${title}"
+                        aria-label="Reload ${title}"
+                    >&#x21bb;</button>
+                </div>
+                <ul>${list}</ul>
+            </div>
         `;
     }
 
     private getDashboardHtml(data: DashboardPanelData): string {
         const hasProvider = data.vercelConnected || data.coolifyConnected || data.netlifyConnected;
         const existsRemotely = data.projectExistsOnVercel || data.projectExistsOnCoolify || data.projectExistsOnNetlify;
+        const deployedProviders: ProviderName[] = [];
+        if (data.projectExistsOnVercel) {
+            deployedProviders.push('Vercel');
+        }
+        if (data.projectExistsOnNetlify) {
+            deployedProviders.push('Netlify');
+        }
+        if (data.projectExistsOnCoolify) {
+            deployedProviders.push('Coolify');
+        }
 
         const totalResources = data.vercelProjects.length + data.coolifyApps.length + data.netlifySites.length;
         const totalActivities = data.activity.length;
@@ -1037,7 +1156,7 @@ export class DashboardPanel {
                     : 'Not detected'
             )}</strong></div>
                     <div class="project-line"><span>Status</span><strong class="${existsRemotely ? 'status-ok' : 'status-idle'
-            }">${existsRemotely ? 'Deployed' : 'Not Deployed'}</strong></div>
+            }">${existsRemotely ? `Deployed in ${deployedProviders.join(', ')}` : 'Not Deployed'}</strong></div>
                 </div>
             `
             : '<div class="empty-block">No workspace detected. Open a project folder to continue.</div>';
@@ -1080,13 +1199,7 @@ export class DashboardPanel {
             : `
                 <div class="action-grid">
                     <button id="btn-refresh" class="accent-btn" type="button">Refresh Dashboard</button>
-                    ${existsRemotely
-                ? `
-                        <button id="btn-redeploy" class="primary-btn" type="button">Redeploy Project</button>
-                        <small id="redeploy-project-status" class="redeploy-status"></small>
-                    `
-                : '<button id="btn-deploy" class="primary-btn" type="button">Deploy Project</button>'
-            }
+                    <button id="btn-deploy" class="primary-btn" type="button">Deploy Project</button>
                     <button id="btn-open-logs" class="ghost-btn" type="button">Open Logs</button>
                 </div>
             `;
@@ -1400,7 +1513,50 @@ export class DashboardPanel {
                     .resource-grid {
                         display: grid;
                         grid-template-columns: repeat(3, minmax(0, 1fr));
-                        gap: 12px;
+                        gap: 0;
+                        border: 1px solid rgba(120, 136, 226, 0.18);
+                        border-radius: 12px;
+                        overflow: hidden;
+                    }
+
+                    .provider-resource-section {
+                        position: relative;
+                        padding: 12px;
+                        background: linear-gradient(180deg, rgba(22, 30, 60, 0.55), rgba(12, 18, 36, 0.75));
+                        min-height: 260px;
+                    }
+
+                    .provider-resource-section + .provider-resource-section {
+                        border-left: 1px solid rgba(120, 136, 226, 0.18);
+                    }
+
+                    .provider-resource-section.is-loading {
+                        opacity: 0.55;
+                        pointer-events: none;
+                    }
+
+                    .provider-section-head {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 8px;
+                        margin-bottom: 10px;
+                    }
+
+                    .provider-section-head h3 {
+                        margin: 0;
+                        font-size: 13px;
+                        font-weight: 700;
+                    }
+
+                    .section-refresh-btn {
+                        min-height: 22px;
+                        min-width: 22px;
+                        width: 22px;
+                        padding: 0;
+                        line-height: 1;
+                        border-radius: 6px;
+                        font-size: 12px;
                     }
 
                     .resource-grid ul {
@@ -1408,19 +1564,19 @@ export class DashboardPanel {
                         margin: 0;
                         padding: 0;
                         display: grid;
-                        gap: 8px;
+                        gap: 10px;
                     }
 
                     .resource-grid li {
                         display: flex;
                         justify-content: space-between;
-                        gap: 8px;
-                        align-items: center;
+                        gap: 10px;
+                        align-items: flex-start;
                         font-size: 13px;
-                        padding: 8px 10px;
-                        border-radius: 9px;
-                        border: 1px solid rgba(125, 141, 232, 0.2);
-                        background: rgba(9, 14, 31, 0.68);
+                        padding: 10px;
+                        border-radius: 8px;
+                        border: 1px solid rgba(110, 128, 230, 0.24);
+                        background: linear-gradient(180deg, rgba(18, 27, 54, 0.76), rgba(12, 18, 38, 0.85));
                     }
 
                     .resource-grid small {
@@ -1434,13 +1590,32 @@ export class DashboardPanel {
                     .resource-meta {
                         min-width: 0;
                         display: grid;
-                        gap: 4px;
+                        gap: 6px;
+                        flex: 1;
+                    }
+
+                    .resource-title {
+                        font-size: 13px;
+                        font-weight: 700;
+                        line-height: 1.2;
+                    }
+
+                    .resource-subtitle {
+                        font-size: 11px;
+                        line-height: 1.2;
+                        color: #9eacd6;
                     }
 
                     .resource-actions {
                         display: grid;
                         gap: 4px;
                         justify-items: end;
+                    }
+
+                    .resource-btn {
+                        min-height: 24px;
+                        padding: 3px 8px;
+                        font-size: 11px;
                     }
 
                     .git-pill {
@@ -1461,12 +1636,6 @@ export class DashboardPanel {
                         color: #ffd994;
                         background: rgba(240, 152, 56, 0.18);
                         border-color: rgba(255, 184, 95, 0.38);
-                    }
-
-                    .git-pill-unknown {
-                        color: #c3cced;
-                        background: rgba(117, 138, 242, 0.12);
-                        border-color: rgba(117, 138, 242, 0.28);
                     }
 
                     .resource-actions .ghost-btn[disabled] {
@@ -1552,6 +1721,11 @@ export class DashboardPanel {
                         .resource-grid {
                             grid-template-columns: 1fr;
                         }
+
+                        .provider-resource-section + .provider-resource-section {
+                            border-left: none;
+                            border-top: 1px solid rgba(120, 136, 226, 0.18);
+                        }
                     }
                 </style>
             </head>
@@ -1593,7 +1767,7 @@ export class DashboardPanel {
                         </article>
 
                         <article class="card section" aria-labelledby="actions-heading">
-                            <h2 id="actions-heading">Quick Actions</h2>
+                            <h2 id="actions-heading">General Actions</h2>
                             ${actionButtons}
                         </article>
                     </section>
@@ -1605,7 +1779,7 @@ export class DashboardPanel {
                                 <small id="latest-commit-label">Latest commit: ${DashboardPanel.escapeHtml(data.latestCommitLabel)}</small>
                                 <div id="check-git-status" class="check-git-status"></div>
                             </div>
-                            <button id="btn-check-git" class="accent-btn" type="button">Check Git Updates</button>
+                            <button id="btn-check-git" class="accent-btn" type="button">Refresh</button>
                         </div>
                         <div id="managed-resources-body">
                             ${this.getManagedResourcesBodyHtml(data)}
@@ -1715,46 +1889,64 @@ export class DashboardPanel {
                         deployButton.addEventListener('click', () => send('deployProject'));
                     }
 
-                    const redeployButton = document.getElementById('btn-redeploy');
-                    if (redeployButton) {
-                        redeployButton.addEventListener('click', async () => {
-                            if (redeployButton.disabled) {
-                                return;
-                            }
-
-                            const statusNode = document.getElementById('redeploy-project-status');
-                            redeployButton.disabled = true;
-                            const baseLabel = redeployButton.textContent || 'Redeploy Project';
-                            redeployButton.textContent = 'Redeploying...';
-                            if (statusNode) {
-                                statusNode.classList.remove('ok', 'error');
-                                statusNode.textContent = 'In progress...';
-                            }
-
-                            const result = await sendWithReply('redeployProject', {}, 'redeployResult');
-
-                            redeployButton.disabled = false;
-                            redeployButton.textContent = baseLabel;
-                            if (statusNode) {
-                                if (result.success) {
-                                    statusNode.classList.remove('error');
-                                    statusNode.classList.add('ok');
-                                    statusNode.textContent = 'Success';
-                                } else {
-                                    statusNode.classList.remove('ok');
-                                    statusNode.classList.add('error');
-                                    statusNode.textContent = 'Failed: ' + (result.error || 'Unknown error');
-                                }
-                            }
-                        });
-                    }
-
                     const openLogsButton = document.getElementById('btn-open-logs');
                     if (openLogsButton) {
                         openLogsButton.addEventListener('click', () => send('openLogs'));
                     }
 
                     function bindResourceButtons() {
+                        const providerRefreshButtons = document.querySelectorAll('[data-action="refresh-provider-resources"]');
+                        for (const refreshButton of providerRefreshButtons) {
+                            if (refreshButton.dataset.bound === 'true') {
+                                continue;
+                            }
+                            refreshButton.dataset.bound = 'true';
+                            refreshButton.addEventListener('click', async () => {
+                                if (refreshButton.disabled) {
+                                    return;
+                                }
+
+                                const provider = refreshButton.getAttribute('data-provider') || '';
+                                const sectionNode = document.querySelector('[data-provider-section="' + provider + '"]');
+                                const checkStatus = document.getElementById('check-git-status');
+                                const baseLabel = refreshButton.textContent || '?';
+
+                                refreshButton.disabled = true;
+                                refreshButton.textContent = '...';
+                                if (sectionNode) {
+                                    sectionNode.classList.add('is-loading');
+                                }
+
+                                const result = await sendWithReply(
+                                    'refreshProviderResources',
+                                    { provider },
+                                    'refreshProviderResourcesResult'
+                                );
+
+                                refreshButton.disabled = false;
+                                refreshButton.textContent = baseLabel;
+
+                                if (sectionNode) {
+                                    sectionNode.classList.remove('is-loading');
+                                }
+
+                                if (result.success && typeof result.providerSectionHtml === 'string' && sectionNode) {
+                                    sectionNode.outerHTML = result.providerSectionHtml;
+                                    if (checkStatus) {
+                                        checkStatus.classList.remove('error');
+                                        checkStatus.textContent = provider + ' section refreshed.';
+                                    }
+                                    bindResourceButtons();
+                                    return;
+                                }
+
+                                if (checkStatus) {
+                                    checkStatus.classList.add('error');
+                                    checkStatus.textContent = 'Failed: ' + (result.error || 'Unable to refresh section.');
+                                }
+                            });
+                        }
+
                         const logButtons = document.querySelectorAll('[data-action="open-logs"]');
                         for (const logButton of logButtons) {
                             if (logButton.dataset.bound === 'true') {

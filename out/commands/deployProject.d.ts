@@ -1,6 +1,3 @@
-/**
- * Deploy a project that does not yet exist remotely.
- * Enforces the "deploy only if new" rule.
- */
+/** Deploy a project to a selected connected provider. */
 export declare function deployProject(): Promise<void>;
 //# sourceMappingURL=deployProject.d.ts.map

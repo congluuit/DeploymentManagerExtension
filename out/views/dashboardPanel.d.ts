@@ -27,12 +27,17 @@ export declare class DashboardPanel {
     private buildManagedResources;
     private toManagedStatus;
     private normalizePublicUrl;
+    private matchesWorkspaceOnVercel;
+    private matchesWorkspaceOnCoolify;
+    private matchesWorkspaceOnNetlify;
+    private normalizeRepoIdentifier;
     private getLatestVercelDeployment;
     private getLatestNetlifyDeploy;
     private getWorkspaceLatestCommitLabel;
     private getLatestCommitFromLocalGit;
     private getManagedResourceRowHtml;
     private getManagedResourcesBodyHtml;
+    private getManagedProviderSectionHtml;
     private getDashboardHtml;
     private getLoadingHtml;
     private getErrorHtml;
