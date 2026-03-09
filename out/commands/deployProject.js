@@ -35,11 +35,15 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deployProject = deployProject;
 const vscode = __importStar(require("vscode"));
-const vercelClient_1 = require("../clients/vercelClient");
-const coolifyClient_1 = require("../clients/coolifyClient");
 const projectDetector_1 = require("../services/projectDetector");
 const secretStorage_1 = require("../utils/secretStorage");
 const types_1 = require("../utils/types");
+const providers_1 = require("../providers");
+const PROVIDER_CONNECTION_KEYS = {
+    Vercel: types_1.StorageKeys.VERCEL_TOKEN,
+    Coolify: types_1.StorageKeys.COOLIFY_TOKEN,
+    Netlify: types_1.StorageKeys.NETLIFY_TOKEN,
+};
 /**
  * Deploy a project that does not yet exist remotely.
  * Enforces the "deploy only if new" rule.
@@ -52,38 +56,33 @@ async function deployProject(dashboardRefresh) {
         return;
     }
     const storage = secretStorage_1.SecretStorageManager.getInstance();
-    const hasVercel = await storage.has(types_1.StorageKeys.VERCEL_TOKEN);
-    const hasCoolify = await storage.has(types_1.StorageKeys.COOLIFY_TOKEN);
-    if (!hasVercel && !hasCoolify) {
-        vscode.window.showErrorMessage('No deployment providers connected. Please connect Vercel or Coolify first.');
+    const connectedProviders = [];
+    for (const providerName of Object.keys(PROVIDER_CONNECTION_KEYS)) {
+        if (await storage.has(PROVIDER_CONNECTION_KEYS[providerName])) {
+            connectedProviders.push(providerName);
+        }
+    }
+    if (connectedProviders.length === 0) {
+        vscode.window.showErrorMessage('No deployment providers connected. Please connect Vercel, Coolify, or Netlify first.');
         return;
     }
-    // Check if project already exists remotely
-    if (hasVercel) {
-        const vercel = new vercelClient_1.VercelClient();
-        const existing = await vercel.findProjectByNameOrRepo(projectInfo.name, projectInfo.repoUrl);
+    const existingProviders = [];
+    for (const providerName of connectedProviders) {
+        const adapter = (0, providers_1.getProvider)(providerName);
+        const existing = await adapter.findExistingProject(projectInfo);
         if (existing) {
-            vscode.window.showWarningMessage(`Project "${projectInfo.name}" already exists on Vercel. Use Redeploy instead.`);
-            return;
+            existingProviders.push(providerName);
         }
     }
-    if (hasCoolify) {
-        const coolify = new coolifyClient_1.CoolifyClient();
-        const existing = await coolify.findApplicationByNameOrRepo(projectInfo.name, projectInfo.repoUrl);
-        if (existing) {
-            vscode.window.showWarningMessage(`Project "${projectInfo.name}" already exists on Coolify. Use Redeploy instead.`);
-            return;
-        }
+    if (existingProviders.length > 0) {
+        const list = existingProviders.join(', ');
+        vscode.window.showWarningMessage(`Project "${projectInfo.name}" already exists on ${list}. Use Redeploy instead.`);
+        return;
     }
-    // Build provider choices
-    const providers = [];
-    if (hasVercel) {
-        providers.push({ label: 'Vercel', description: 'Deploy to Vercel' });
-    }
-    if (hasCoolify) {
-        providers.push({ label: 'Coolify', description: 'Deploy to Coolify' });
-    }
-    const selected = await vscode.window.showQuickPick(providers, {
+    const selected = await vscode.window.showQuickPick(connectedProviders.map((provider) => ({
+        label: provider,
+        description: `Deploy to ${provider}`,
+    })), {
         placeHolder: 'Select deployment provider',
         ignoreFocusOut: true,
     });
@@ -96,28 +95,15 @@ async function deployProject(dashboardRefresh) {
         cancellable: false,
     }, async () => {
         try {
-            if (selected.label === 'Vercel') {
-                const vercel = new vercelClient_1.VercelClient();
-                const gitRepo = projectInfo.repoOwner && projectInfo.repoName
-                    ? { type: 'github', repo: `${projectInfo.repoOwner}/${projectInfo.repoName}` }
-                    : undefined;
-                await vercel.createProject(projectInfo.name, gitRepo);
-                vscode.window.showInformationMessage(`✅ Project "${projectInfo.name}" created and deployed on Vercel!`);
-            }
-            else if (selected.label === 'Coolify') {
-                const coolify = new coolifyClient_1.CoolifyClient();
-                await coolify.createApplication({
-                    name: projectInfo.name,
-                    git_repository: projectInfo.repoUrl || undefined,
-                    git_branch: projectInfo.branch,
-                });
-                vscode.window.showInformationMessage(`✅ Project "${projectInfo.name}" created and deployed on Coolify!`);
-            }
+            const provider = selected.label;
+            const adapter = (0, providers_1.getProvider)(provider);
+            await adapter.createProject(projectInfo);
+            vscode.window.showInformationMessage(`Project "${projectInfo.name}" created on ${provider}.`);
             dashboardRefresh();
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showErrorMessage(`❌ Deployment failed: ${message}`);
+            vscode.window.showErrorMessage(`Deployment failed: ${message}`);
         }
     });
 }

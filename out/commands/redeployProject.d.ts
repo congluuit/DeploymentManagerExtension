@@ -1,11 +1,13 @@
+import { ProviderName } from '../providers/providerTypes';
 export interface RedeployTarget {
-    provider: 'Vercel' | 'Coolify';
+    provider: ProviderName;
     id: string;
     name: string;
 }
 export interface RedeployOptions {
     target?: RedeployTarget;
     notify?: boolean;
+    refreshDashboard?: boolean;
 }
 export interface RedeployResult {
     success: boolean;

@@ -1,1 +1,1 @@
-{"version":3,"file":"openLogs.d.ts","sourceRoot":"","sources":["../../src/commands/openLogs.ts"],"names":[],"mappings":"AAMA;;;GAGG;AACH,wBAAsB,QAAQ,CAAC,QAAQ,CAAC,EAAE,MAAM,EAAE,SAAS,CAAC,EAAE,MAAM,EAAE,WAAW,CAAC,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC,CAyGzG"}
+{"version":3,"file":"openLogs.d.ts","sourceRoot":"","sources":["../../src/commands/openLogs.ts"],"names":[],"mappings":"AAgBA;;;GAGG;AACH,wBAAsB,QAAQ,CAAC,QAAQ,CAAC,EAAE,MAAM,EAAE,SAAS,CAAC,EAAE,MAAM,EAAE,WAAW,CAAC,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC,CA8EzG"}

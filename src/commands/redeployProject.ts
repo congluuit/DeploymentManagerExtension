@@ -1,16 +1,18 @@
 import * as vscode from 'vscode';
-import { VercelClient } from '../clients/vercelClient';
-import { CoolifyClient } from '../clients/coolifyClient';
 import { ProjectDetector } from '../services/projectDetector';
+import { getProvider } from '../providers';
+import { ProviderName } from '../providers/providerTypes';
 import { SecretStorageManager } from '../utils/secretStorage';
 import { StorageKeys } from '../utils/types';
 
-const POLL_INTERVAL_MS = 4000;
-const VERCEL_TIMEOUT_MS = 15 * 60 * 1000;
-const COOLIFY_TIMEOUT_MS = 15 * 60 * 1000;
+const PROVIDER_CONNECTION_KEYS: Record<ProviderName, string> = {
+    Vercel: StorageKeys.VERCEL_TOKEN,
+    Coolify: StorageKeys.COOLIFY_TOKEN,
+    Netlify: StorageKeys.NETLIFY_TOKEN,
+};
 
 export interface RedeployTarget {
-    provider: 'Vercel' | 'Coolify';
+    provider: ProviderName;
     id: string;
     name: string;
 }
@@ -18,6 +20,7 @@ export interface RedeployTarget {
 export interface RedeployOptions {
     target?: RedeployTarget;
     notify?: boolean;
+    refreshDashboard?: boolean;
 }
 
 export interface RedeployResult {
@@ -34,6 +37,8 @@ export async function redeployProject(
     options?: RedeployOptions
 ): Promise<RedeployResult> {
     const notify = options?.notify ?? true;
+    const refreshDashboard = options?.refreshDashboard ?? true;
+
     const detector = new ProjectDetector();
     const projectInfo = options?.target ? null : await detector.detect();
 
@@ -46,40 +51,40 @@ export async function redeployProject(
     }
 
     const storage = SecretStorageManager.getInstance();
-    const hasVercel = await storage.has(StorageKeys.VERCEL_TOKEN);
-    const hasCoolify = await storage.has(StorageKeys.COOLIFY_TOKEN);
+    const connectedProviders: ProviderName[] = [];
 
-    if (!hasVercel && !hasCoolify) {
-        const message = 'No deployment providers connected. Please connect Vercel or Coolify first.';
+    for (const providerName of Object.keys(PROVIDER_CONNECTION_KEYS) as ProviderName[]) {
+        if (await storage.has(PROVIDER_CONNECTION_KEYS[providerName])) {
+            connectedProviders.push(providerName);
+        }
+    }
+
+    if (connectedProviders.length === 0) {
+        const message = 'No deployment providers connected. Please connect Vercel, Coolify, or Netlify first.';
         if (notify) {
             vscode.window.showErrorMessage(message);
         }
         return { success: false, error: message };
     }
 
-    type FoundProvider = { provider: 'Vercel' | 'Coolify'; id: string; name: string };
+    type FoundProvider = { provider: ProviderName; id: string; name: string };
     const foundProviders: FoundProvider[] = options?.target
         ? [{ provider: options.target.provider, id: options.target.id, name: options.target.name }]
         : [];
 
-    if (!options?.target && hasVercel) {
-        const vercel = new VercelClient();
-        const existing = await vercel.findProjectByNameOrRepo(projectInfo!.name, projectInfo!.repoUrl);
-        if (existing) {
-            foundProviders.push({ provider: 'Vercel', id: existing.id, name: existing.name });
-        }
-    }
-
-    if (!options?.target && hasCoolify) {
-        const coolify = new CoolifyClient();
-        const existing = await coolify.findApplicationByNameOrRepo(projectInfo!.name, projectInfo!.repoUrl);
-        if (existing) {
-            foundProviders.push({ provider: 'Coolify', id: existing.uuid, name: existing.name });
+    if (!options?.target && projectInfo) {
+        for (const providerName of connectedProviders) {
+            const adapter = getProvider(providerName);
+            const existing = await adapter.findExistingProject(projectInfo);
+            if (existing) {
+                foundProviders.push({ provider: providerName, id: existing.id, name: existing.name });
+            }
         }
     }
 
     if (foundProviders.length === 0) {
-        const message = `Project "${projectInfo!.name}" does not exist on any connected provider. Use Deploy instead.`;
+        const projectName = projectInfo?.name || options?.target?.name || 'Current project';
+        const message = `Project "${projectName}" does not exist on any connected provider. Use Deploy instead.`;
         if (notify) {
             vscode.window.showWarningMessage(message);
         }
@@ -106,16 +111,9 @@ export async function redeployProject(
         target = picked.provider;
     }
 
-    if (target.provider === 'Vercel' && !hasVercel) {
-        const message = 'Vercel is not connected. Please connect Vercel first.';
-        if (notify) {
-            vscode.window.showErrorMessage(message);
-        }
-        return { success: false, error: message };
-    }
-
-    if (target.provider === 'Coolify' && !hasCoolify) {
-        const message = 'Coolify is not connected. Please connect Coolify first.';
+    const isConnected = connectedProviders.includes(target.provider);
+    if (!isConnected) {
+        const message = `${target.provider} is not connected. Please connect ${target.provider} first.`;
         if (notify) {
             vscode.window.showErrorMessage(message);
         }
@@ -132,39 +130,19 @@ export async function redeployProject(
         },
         async (progress) => {
             try {
-                if (target.provider === 'Vercel') {
-                    const vercel = new VercelClient();
-                    progress.report({ message: 'Triggering redeploy request...' });
-                    const deployment = await vercel.redeployProject(target.id, target.name);
-                    const deploymentId = deployment.uid || deployment.id;
-                    if (!deploymentId) {
-                        throw new Error('Unable to determine Vercel deployment ID after triggering redeploy.');
-                    }
+                const adapter = getProvider(target.provider);
+                const result = await adapter.redeploy({ id: target.id, name: target.name }, { progress });
 
-                    progress.report({ message: `Queued deployment ${shortId(deploymentId)}. Waiting for build status...` });
-                    const completed = await waitForVercelDeployment(vercel, deploymentId, target.name, progress);
-                    const deploymentUrl = completed.url ? `https://${completed.url}` : null;
-
-                    if (notify) {
-                        vscode.window.showInformationMessage(
-                            deploymentUrl
-                                ? `Redeployment succeeded for "${target.name}" on Vercel. URL: ${deploymentUrl}`
-                                : `Redeployment succeeded for "${target.name}" on Vercel.`
-                        );
-                    }
-                } else {
-                    const coolify = new CoolifyClient();
-                    progress.report({ message: 'Triggering redeploy request...' });
-                    await coolify.deployApplication(target.id);
-                    progress.report({ message: 'Redeploy triggered. Waiting for Coolify status...' });
-                    await waitForCoolifyDeployment(coolify, target.id, target.name, progress);
-
-                    if (notify) {
-                        vscode.window.showInformationMessage(`Redeployment succeeded for "${target.name}" on Coolify.`);
-                    }
+                if (notify) {
+                    const urlSuffix = result.deploymentUrl ? ` URL: ${result.deploymentUrl}` : '';
+                    vscode.window.showInformationMessage(
+                        `Redeployment succeeded for "${target.name}" on ${target.provider}.${urlSuffix}`
+                    );
                 }
 
-                dashboardRefresh();
+                if (refreshDashboard) {
+                    await Promise.resolve(dashboardRefresh());
+                }
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 runError = message;
@@ -180,160 +158,4 @@ export async function redeployProject(
     }
 
     return { success: true };
-}
-
-async function waitForVercelDeployment(
-    vercel: VercelClient,
-    deploymentId: string,
-    projectName: string,
-    progress: vscode.Progress<{ message?: string; increment?: number }>
-): Promise<{ state: string; url?: string }> {
-    const startedAt = Date.now();
-
-    while (Date.now() - startedAt < VERCEL_TIMEOUT_MS) {
-        try {
-            const deployment = await vercel.getDeployment(deploymentId) as unknown as Record<string, unknown>;
-            const state = getVercelState(deployment);
-            progress.report({
-                message: `Vercel status: ${state} (${formatElapsed(startedAt)})`,
-            });
-
-            if (state === 'READY') {
-                return {
-                    state,
-                    url: typeof deployment.url === 'string' ? deployment.url : undefined,
-                };
-            }
-
-            if (state === 'ERROR' || state === 'CANCELED') {
-                const reason = extractVercelFailureReason(deployment) || 'No failure reason returned by Vercel.';
-                throw new Error(`Vercel deployment failed (${state}) for "${projectName}": ${reason}`);
-            }
-        } catch (error) {
-            const text = error instanceof Error ? error.message : String(error);
-            // Vercel may briefly return 404 right after create; retry early.
-            if (Date.now() - startedAt < 30000 && /404|not found/i.test(text)) {
-                progress.report({ message: `Waiting for deployment details... (${formatElapsed(startedAt)})` });
-                await sleep(POLL_INTERVAL_MS);
-                continue;
-            }
-            throw error;
-        }
-
-        await sleep(POLL_INTERVAL_MS);
-    }
-
-    throw new Error(`Timed out waiting for Vercel deployment to complete for "${projectName}".`);
-}
-
-async function waitForCoolifyDeployment(
-    coolify: CoolifyClient,
-    appId: string,
-    appName: string,
-    progress: vscode.Progress<{ message?: string; increment?: number }>
-): Promise<void> {
-    const startedAt = Date.now();
-    let sawNonSuccessState = false;
-
-    while (Date.now() - startedAt < COOLIFY_TIMEOUT_MS) {
-        const application = await coolify.getApplication(appId);
-        const rawStatus = application.status || 'unknown';
-        const status = rawStatus.toLowerCase();
-
-        progress.report({
-            message: `Coolify status: ${rawStatus} (${formatElapsed(startedAt)})`,
-        });
-
-        if (!isCoolifySuccessStatus(status)) {
-            sawNonSuccessState = true;
-        }
-
-        if (isCoolifyFailureStatus(status)) {
-            const logReason = await extractCoolifyFailureReason(coolify, appId);
-            throw new Error(`Coolify deployment failed for "${appName}" with status "${rawStatus}". ${logReason}`);
-        }
-
-        if (isCoolifySuccessStatus(status)) {
-            // Avoid instant false-positive when status still shows previous "running" state.
-            if (sawNonSuccessState || Date.now() - startedAt >= 10000) {
-                return;
-            }
-        }
-
-        await sleep(POLL_INTERVAL_MS);
-    }
-
-    throw new Error(`Timed out waiting for Coolify deployment to complete for "${appName}".`);
-}
-
-function getVercelState(deployment: Record<string, unknown>): string {
-    const state = deployment.state ?? deployment.readyState ?? 'QUEUED';
-    return String(state).toUpperCase();
-}
-
-function extractVercelFailureReason(deployment: Record<string, unknown>): string | null {
-    const error = deployment.error as Record<string, unknown> | undefined;
-    const meta = deployment.meta as Record<string, unknown> | undefined;
-
-    const candidates: Array<unknown> = [
-        error?.message,
-        deployment.errorMessage,
-        deployment.readyStateReason,
-        meta?.error,
-        meta?.errorMessage,
-        meta?.message,
-    ];
-
-    for (const candidate of candidates) {
-        if (typeof candidate === 'string' && candidate.trim().length > 0) {
-            return candidate.trim();
-        }
-    }
-
-    return null;
-}
-
-function isCoolifySuccessStatus(status: string): boolean {
-    return ['running', 'ready', 'healthy', 'active', 'started', 'up'].includes(status);
-}
-
-function isCoolifyFailureStatus(status: string): boolean {
-    return ['failed', 'error', 'errored', 'crashed', 'dead', 'unhealthy', 'stopped', 'exited'].includes(status);
-}
-
-async function extractCoolifyFailureReason(coolify: CoolifyClient, appId: string): Promise<string> {
-    try {
-        const logs = await coolify.getApplicationLogs(appId);
-        const lastLine = logs
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0)
-            .slice(-1)[0];
-
-        if (lastLine) {
-            return `Last log line: ${lastLine}`;
-        }
-    } catch {
-        // Best-effort logs only.
-    }
-
-    return 'No detailed failure log was returned by Coolify.';
-}
-
-function shortId(id: string): string {
-    return id.length <= 8 ? id : id.slice(0, 8);
-}
-
-function formatElapsed(startedAt: number): string {
-    const totalSeconds = Math.floor((Date.now() - startedAt) / 1000);
-    if (totalSeconds < 60) {
-        return `${totalSeconds}s`;
-    }
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes}m ${seconds}s`;
-}
-
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }

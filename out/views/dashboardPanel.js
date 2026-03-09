@@ -35,8 +35,11 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DashboardPanel = void 0;
 const vscode = __importStar(require("vscode"));
+const child_process_1 = require("child_process");
+const util_1 = require("util");
 const coolifyClient_1 = require("../clients/coolifyClient");
 const githubClient_1 = require("../clients/githubClient");
+const netlifyClient_1 = require("../clients/netlifyClient");
 const vercelClient_1 = require("../clients/vercelClient");
 const projectDetector_1 = require("../services/projectDetector");
 const secretStorage_1 = require("../utils/secretStorage");
@@ -67,6 +70,7 @@ class DashboardPanel {
     }
     constructor(panel, extensionUri, runRefresh) {
         this.disposables = [];
+        this.execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
         this.panel = panel;
         this.extensionUri = extensionUri;
         this.runRefresh = runRefresh;
@@ -79,8 +83,31 @@ class DashboardPanel {
     async handleMessage(message) {
         switch (message.command) {
             case 'refresh':
-            case 'checkGitUpdates':
                 await this.runRefresh();
+                return;
+            case 'checkGitUpdates':
+                if (!message.requestId) {
+                    return;
+                }
+                try {
+                    const data = await this.collectData();
+                    this.panel.webview.postMessage({
+                        command: 'checkGitUpdatesResult',
+                        requestId: message.requestId,
+                        success: true,
+                        sectionBodyHtml: this.getManagedResourcesBodyHtml(data),
+                        latestCommitLabel: data.latestCommitLabel,
+                    });
+                }
+                catch (error) {
+                    const text = error instanceof Error ? error.message : String(error);
+                    this.panel.webview.postMessage({
+                        command: 'checkGitUpdatesResult',
+                        requestId: message.requestId,
+                        success: false,
+                        error: text,
+                    });
+                }
                 return;
             case 'connectVercel':
                 await vscode.commands.executeCommand('deploymentManager.connectVercel');
@@ -90,13 +117,40 @@ class DashboardPanel {
                 await vscode.commands.executeCommand('deploymentManager.connectCoolify');
                 await this.runRefresh();
                 return;
+            case 'connectNetlify':
+                await vscode.commands.executeCommand('deploymentManager.connectNetlify');
+                await this.runRefresh();
+                return;
             case 'deployProject':
                 await vscode.commands.executeCommand('deploymentManager.deployProject');
                 await this.runRefresh();
                 return;
             case 'redeployProject':
+                if (message.requestId) {
+                    try {
+                        const result = await vscode.commands.executeCommand('deploymentManager.redeployProject', {
+                            notify: false,
+                            refresh: false,
+                        });
+                        this.panel.webview.postMessage({
+                            command: 'redeployResult',
+                            requestId: message.requestId,
+                            success: result?.success === true,
+                            error: result?.error,
+                        });
+                    }
+                    catch (error) {
+                        const text = error instanceof Error ? error.message : String(error);
+                        this.panel.webview.postMessage({
+                            command: 'redeployResult',
+                            requestId: message.requestId,
+                            success: false,
+                            error: text,
+                        });
+                    }
+                    return;
+                }
                 await vscode.commands.executeCommand('deploymentManager.redeployProject');
-                await this.runRefresh();
                 return;
             case 'redeployResource': {
                 if (!message.requestId || !message.provider || !message.projectId || !message.projectName) {
@@ -116,6 +170,7 @@ class DashboardPanel {
                             name: message.projectName,
                         },
                         notify: false,
+                        refresh: false,
                     });
                     this.panel.webview.postMessage({
                         command: 'redeployResult',
@@ -170,10 +225,13 @@ class DashboardPanel {
         const storage = secretStorage_1.SecretStorageManager.getInstance();
         const vercelConnected = await storage.has(types_1.StorageKeys.VERCEL_TOKEN);
         const coolifyConnected = await storage.has(types_1.StorageKeys.COOLIFY_TOKEN);
+        const netlifyConnected = await storage.has(types_1.StorageKeys.NETLIFY_TOKEN);
         let projectExistsOnVercel = false;
         let projectExistsOnCoolify = false;
+        let projectExistsOnNetlify = false;
         let vercelProjects = [];
         let coolifyApps = [];
+        let netlifySites = [];
         const activity = [];
         if (vercelConnected) {
             try {
@@ -222,23 +280,51 @@ class DashboardPanel {
                 // Ignore API failures and keep dashboard usable.
             }
         }
+        if (netlifyConnected) {
+            try {
+                const netlify = new netlifyClient_1.NetlifyClient();
+                netlifySites = await netlify.listSites();
+                if (projectInfo) {
+                    const matched = await netlify.findSiteByNameOrRepo(projectInfo.name, projectInfo.repoUrl);
+                    projectExistsOnNetlify = matched !== null;
+                    if (matched) {
+                        const deploys = await netlify.listSiteDeploys(matched.id, 8);
+                        activity.push(...this.mapNetlifyDeployments(deploys, matched.name, matched.id));
+                    }
+                }
+                if (netlifySites.length > 0) {
+                    const sampleSites = netlifySites.slice(0, 3);
+                    for (const site of sampleSites) {
+                        const deploys = await netlify.listSiteDeploys(site.id, 2);
+                        activity.push(...this.mapNetlifyDeployments(deploys, site.name, site.id));
+                    }
+                }
+            }
+            catch {
+                // Ignore API failures and keep dashboard usable.
+            }
+        }
         activity.sort((a, b) => b.timestamp - a.timestamp);
         const trimmedActivity = activity.slice(0, 20);
         const stateCounts = this.buildStateCounts(trimmedActivity);
-        const managedResources = await this.buildManagedResources(vercelProjects, coolifyApps, vercelConnected);
+        const managedResources = await this.buildManagedResources(vercelProjects, coolifyApps, netlifySites, vercelConnected, netlifyConnected);
+        const latestCommitLabel = await this.getWorkspaceLatestCommitLabel(projectInfo);
         return {
             generatedAt: new Date().toLocaleString(),
             projectInfo,
             vercelConnected,
             coolifyConnected,
+            netlifyConnected,
             projectExistsOnVercel,
             projectExistsOnCoolify,
+            projectExistsOnNetlify,
             vercelProjects,
             coolifyApps,
+            netlifySites,
             activity: trimmedActivity,
             stateCounts,
             managedResources,
-            gitStatusGeneratedAt: new Date().toLocaleString(),
+            latestCommitLabel,
         };
     }
     mapVercelDeployments(deployments, projectName, projectId) {
@@ -251,6 +337,21 @@ class DashboardPanel {
                 projectName,
                 title: deployment.uid.substring(0, 10),
                 state: deployment.state,
+                timestamp,
+                timestampLabel: DashboardPanel.formatTimestamp(timestamp),
+            };
+        });
+    }
+    mapNetlifyDeployments(deploys, projectName, projectId) {
+        return deploys.map((deploy) => {
+            const timestamp = DashboardPanel.normalizeTimestamp(deploy.published_at || deploy.updated_at || deploy.created_at);
+            return {
+                id: `netlify-${deploy.id}`,
+                provider: 'Netlify',
+                projectId,
+                projectName,
+                title: deploy.id.substring(0, 10),
+                state: deploy.state || 'Unknown',
                 timestamp,
                 timestampLabel: DashboardPanel.formatTimestamp(timestamp),
             };
@@ -286,11 +387,12 @@ class DashboardPanel {
         }
         return 'Other';
     }
-    async buildManagedResources(vercelProjects, coolifyApps, vercelConnected) {
+    async buildManagedResources(vercelProjects, coolifyApps, netlifySites, vercelConnected, netlifyConnected) {
         const resources = [];
         const github = new githubClient_1.GitHubClient();
         const cache = new Map();
         const vercel = vercelConnected ? new vercelClient_1.VercelClient() : null;
+        const netlify = netlifyConnected ? new netlifyClient_1.NetlifyClient() : null;
         const vercelLimit = vercelProjects.slice(0, 10);
         for (const project of vercelLimit) {
             const parsed = this.parseRepoIdentifier(project.link?.repo);
@@ -347,6 +449,38 @@ class DashboardPanel {
                 gitStatusLabel: statusLabel,
             });
         }
+        const netlifyLimit = netlifySites.slice(0, 10);
+        for (const site of netlifyLimit) {
+            const repoSource = site.repo?.repo_url || site.build_settings?.repo_url || site.repo?.repo_path || site.build_settings?.repo_path;
+            const parsed = this.parseRepoIdentifier(repoSource);
+            let status = 'unknown';
+            let statusLabel = 'Unknown';
+            if (parsed) {
+                const branch = site.repo?.repo_branch || site.build_settings?.repo_branch || 'main';
+                const latest = await this.getLatestGitCommit(github, cache, parsed.owner, parsed.repo, branch);
+                if (latest) {
+                    const latestDeploy = await this.getLatestNetlifyDeploy(netlify, site.id);
+                    const deploySha = latestDeploy?.commit_ref?.toLowerCase() || null;
+                    const deployTimestamp = latestDeploy
+                        ? DashboardPanel.normalizeTimestamp(latestDeploy.published_at || latestDeploy.updated_at || latestDeploy.created_at)
+                        : 0;
+                    const hasNewUpdate = deploySha
+                        ? deploySha !== latest.sha.toLowerCase()
+                        : deployTimestamp > 0 && latest.date > deployTimestamp + 60000;
+                    status = hasNewUpdate ? 'new-update' : 'up-to-date';
+                    statusLabel = hasNewUpdate ? 'New update available' : 'Up to date';
+                }
+            }
+            resources.push({
+                key: `netlify-${site.id}`,
+                provider: 'Netlify',
+                projectId: site.id,
+                projectName: site.name,
+                detailLabel: site.state || 'state n/a',
+                gitStatus: status,
+                gitStatusLabel: statusLabel,
+            });
+        }
         return resources;
     }
     async getLatestGitCommit(github, cache, owner, repo, branch) {
@@ -393,6 +527,18 @@ class DashboardPanel {
             return null;
         }
     }
+    async getLatestNetlifyDeploy(netlify, siteId) {
+        if (!netlify) {
+            return null;
+        }
+        try {
+            const deploys = await netlify.listSiteDeploys(siteId, 1);
+            return deploys[0] ?? null;
+        }
+        catch {
+            return null;
+        }
+    }
     extractCommitSha(meta) {
         if (!meta) {
             return null;
@@ -412,10 +558,104 @@ class DashboardPanel {
         }
         return null;
     }
+    async getWorkspaceLatestCommitLabel(projectInfo) {
+        const fromLocalGit = await this.getLatestCommitFromLocalGit(projectInfo);
+        if (fromLocalGit) {
+            return fromLocalGit;
+        }
+        if (!projectInfo?.repoOwner || !projectInfo.repoName) {
+            return 'Not available';
+        }
+        const github = new githubClient_1.GitHubClient();
+        const commit = await github.getLatestCommit(projectInfo.repoOwner, projectInfo.repoName, projectInfo.branch);
+        if (!commit) {
+            return 'Not available';
+        }
+        const message = commit.commit.message.split('\n')[0].trim() || 'No commit message';
+        const shortSha = commit.sha.slice(0, 7);
+        const maxMessageLength = 72;
+        const clippedMessage = message.length > maxMessageLength
+            ? `${message.slice(0, maxMessageLength - 3)}...`
+            : message;
+        return `${clippedMessage} (${shortSha})`;
+    }
+    async getLatestCommitFromLocalGit(projectInfo) {
+        if (!projectInfo?.folderPath) {
+            return null;
+        }
+        try {
+            const { stdout } = await this.execFileAsync('git', ['-C', projectInfo.folderPath, 'log', '-1', '--pretty=%s (%h)'], { windowsHide: true });
+            const line = stdout.trim();
+            return line.length > 0 ? line : null;
+        }
+        catch {
+            return null;
+        }
+    }
+    getManagedResourceRowHtml(item, index) {
+        const stateClass = item.gitStatus === 'new-update'
+            ? 'git-pill-warning'
+            : item.gitStatus === 'up-to-date'
+                ? 'git-pill-ok'
+                : 'git-pill-unknown';
+        const needsRedeploy = item.gitStatus === 'new-update';
+        return `
+            <li class="resource-item">
+                <div class="resource-meta">
+                    <strong>${DashboardPanel.escapeHtml(item.projectName)}</strong>
+                    <small>${DashboardPanel.escapeHtml(item.detailLabel)}</small>
+                    <span class="git-pill ${stateClass}" id="git-status-${index}">${DashboardPanel.escapeHtml(item.gitStatusLabel)}</span>
+                </div>
+                <div class="resource-actions">
+                    <button
+                        class="ghost-btn redeploy-resource-btn"
+                        data-action="redeploy-resource"
+                        data-provider="${DashboardPanel.escapeHtml(item.provider)}"
+                        data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
+                        data-project-name="${DashboardPanel.escapeHtml(item.projectName)}"
+                        data-resource-key="${DashboardPanel.escapeHtml(item.key)}"
+                        type="button"
+                    >${needsRedeploy ? 'Redeploy Needed' : 'Redeploy'}</button>
+                    <small id="redeploy-status-${DashboardPanel.escapeHtml(item.key)}" class="redeploy-status"></small>
+                </div>
+            </li>
+        `;
+    }
+    getManagedResourcesBodyHtml(data) {
+        const vercelManaged = data.managedResources.filter((item) => item.provider === 'Vercel');
+        const coolifyManaged = data.managedResources.filter((item) => item.provider === 'Coolify');
+        const netlifyManaged = data.managedResources.filter((item) => item.provider === 'Netlify');
+        const vercelList = vercelManaged.length
+            ? vercelManaged.map((item, index) => this.getManagedResourceRowHtml(item, index)).join('')
+            : '<li class="muted">No Vercel projects found.</li>';
+        const coolifyList = coolifyManaged.length
+            ? coolifyManaged.map((item, index) => this.getManagedResourceRowHtml(item, index + 100)).join('')
+            : '<li class="muted">No Coolify apps found.</li>';
+        const netlifyList = netlifyManaged.length
+            ? netlifyManaged.map((item, index) => this.getManagedResourceRowHtml(item, index + 200)).join('')
+            : '<li class="muted">No Netlify sites found.</li>';
+        return `
+            <div class="resource-grid">
+                <div>
+                    <h3>Vercel Projects (${data.vercelProjects.length})</h3>
+                    <ul>${vercelList}</ul>
+                </div>
+                <div>
+                    <h3>Coolify Apps (${data.coolifyApps.length})</h3>
+                    <ul>${coolifyList}</ul>
+                </div>
+                <div>
+                    <h3>Netlify Sites (${data.netlifySites.length})</h3>
+                    <ul>${netlifyList}</ul>
+                </div>
+            </div>
+            <div class="footer-note">Last updated: ${DashboardPanel.escapeHtml(data.generatedAt)}</div>
+        `;
+    }
     getDashboardHtml(data) {
-        const hasProvider = data.vercelConnected || data.coolifyConnected;
-        const existsRemotely = data.projectExistsOnVercel || data.projectExistsOnCoolify;
-        const totalResources = data.vercelProjects.length + data.coolifyApps.length;
+        const hasProvider = data.vercelConnected || data.coolifyConnected || data.netlifyConnected;
+        const existsRemotely = data.projectExistsOnVercel || data.projectExistsOnCoolify || data.projectExistsOnNetlify;
+        const totalResources = data.vercelProjects.length + data.coolifyApps.length + data.netlifySites.length;
         const totalActivities = data.activity.length;
         const totalStateCount = Object.values(data.stateCounts).reduce((sum, value) => sum + value, 0) || 1;
         const stateBars = Object.entries(data.stateCounts)
@@ -439,7 +679,11 @@ class DashboardPanel {
         const activityRows = data.activity.length
             ? data.activity
                 .map((entry, index) => {
-                const providerClass = entry.provider === 'Vercel' ? 'badge-vercel' : 'badge-coolify';
+                const providerClass = entry.provider === 'Vercel'
+                    ? 'badge-vercel'
+                    : entry.provider === 'Coolify'
+                        ? 'badge-coolify'
+                        : 'badge-netlify';
                 return `
                         <div class="log-row">
                             <div class="log-main">
@@ -488,62 +732,37 @@ class DashboardPanel {
             </div>
             <div class="provider-row">
                 <div>
+                    <strong>Netlify</strong>
+                    <small>${data.netlifyConnected ? 'Connected and ready' : 'Not connected'}</small>
+                </div>
+                ${data.netlifyConnected
+            ? '<span class="status-pill connected">Connected</span>'
+            : '<button id="btn-connect-netlify" class="accent-btn" type="button">Connect</button>'}
+            </div>
+            <div class="provider-row">
+                <div>
                     <strong>Coolify</strong>
                     <small>${data.coolifyConnected ? 'Connected and ready' : 'Not connected'}</small>
                 </div>
                 ${data.coolifyConnected
             ? '<span class="status-pill connected">Connected</span>'
             : '<button id="btn-connect-coolify" class="accent-btn" type="button">Connect</button>'}
-            </div>
+            </div>           
         `;
         const actionButtons = !hasProvider
-            ? '<div class="empty-block">Connect Vercel or Coolify to unlock deployment actions.</div>'
+            ? '<div class="empty-block">Connect Vercel, Coolify, or Netlify to unlock deployment actions.</div>'
             : `
                 <div class="action-grid">
                     <button id="btn-refresh" class="accent-btn" type="button">Refresh Data</button>
                     ${existsRemotely
-                ? '<button id="btn-redeploy" class="primary-btn" type="button">Redeploy Project</button>'
+                ? `
+                        <button id="btn-redeploy" class="primary-btn" type="button">Redeploy Project</button>
+                        <small id="redeploy-project-status" class="redeploy-status"></small>
+                    `
                 : '<button id="btn-deploy" class="primary-btn" type="button">Deploy Project</button>'}
                     <button id="btn-open-logs" class="ghost-btn" type="button">Open Logs</button>
                 </div>
             `;
-        const vercelManaged = data.managedResources.filter((item) => item.provider === 'Vercel');
-        const coolifyManaged = data.managedResources.filter((item) => item.provider === 'Coolify');
-        const renderResourceRow = (item, index) => {
-            const stateClass = item.gitStatus === 'new-update'
-                ? 'git-pill-warning'
-                : item.gitStatus === 'up-to-date'
-                    ? 'git-pill-ok'
-                    : 'git-pill-unknown';
-            const needsRedeploy = item.gitStatus === 'new-update';
-            return `
-                <li class="resource-item">
-                    <div class="resource-meta">
-                        <strong>${DashboardPanel.escapeHtml(item.projectName)}</strong>
-                        <small>${DashboardPanel.escapeHtml(item.detailLabel)}</small>
-                        <span class="git-pill ${stateClass}" id="git-status-${index}">${DashboardPanel.escapeHtml(item.gitStatusLabel)}</span>
-                    </div>
-                    <div class="resource-actions">
-                        <button
-                            class="ghost-btn redeploy-resource-btn"
-                            data-action="redeploy-resource"
-                            data-provider="${DashboardPanel.escapeHtml(item.provider)}"
-                            data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
-                            data-project-name="${DashboardPanel.escapeHtml(item.projectName)}"
-                            data-resource-key="${DashboardPanel.escapeHtml(item.key)}"
-                            type="button"
-                        >${needsRedeploy ? 'Redeploy Needed' : 'Redeploy'}</button>
-                        <small id="redeploy-status-${DashboardPanel.escapeHtml(item.key)}" class="redeploy-status"></small>
-                    </div>
-                </li>
-            `;
-        };
-        const vercelList = vercelManaged.length
-            ? vercelManaged.map((item, index) => renderResourceRow(item, index)).join('')
-            : '<li class="muted">No Vercel projects found.</li>';
-        const coolifyList = coolifyManaged.length
-            ? coolifyManaged.map((item, index) => renderResourceRow(item, index + 100)).join('')
-            : '<li class="muted">No Coolify apps found.</li>';
         const nonce = DashboardPanel.getNonce();
         return `
             <!DOCTYPE html>
@@ -747,6 +966,11 @@ class DashboardPanel {
                         border: 1px solid rgba(112, 229, 247, 0.38);
                     }
 
+                    .badge-netlify {
+                        background: rgba(93, 226, 193, 0.2);
+                        border: 1px solid rgba(129, 244, 214, 0.38);
+                    }
+
                     .project-grid {
                         display: grid;
                         gap: 10px;
@@ -846,7 +1070,7 @@ class DashboardPanel {
 
                     .resource-grid {
                         display: grid;
-                        grid-template-columns: repeat(2, minmax(0, 1fr));
+                        grid-template-columns: repeat(3, minmax(0, 1fr));
                         gap: 12px;
                     }
 
@@ -934,6 +1158,41 @@ class DashboardPanel {
                         color: #ffabab;
                     }
 
+                    #managed-resources-body {
+                        position: relative;
+                    }
+
+                    #managed-resources-body.is-loading {
+                        opacity: 0.55;
+                        pointer-events: none;
+                    }
+
+                    #managed-resources-body.is-loading::after {
+                        content: '';
+                        position: absolute;
+                        top: 50%;
+                        left: 50%;
+                        width: 24px;
+                        height: 24px;
+                        margin-top: -12px;
+                        margin-left: -12px;
+                        border: 3px solid rgba(130, 146, 255, 0.24);
+                        border-top-color: #7b96ff;
+                        border-radius: 999px;
+                        animation: spin 0.8s linear infinite;
+                    }
+
+                    .check-git-status {
+                        min-height: 14px;
+                        margin-top: 6px;
+                        font-size: 11px;
+                        color: #95a2c9;
+                    }
+
+                    .check-git-status.error {
+                        color: #ffabab;
+                    }
+
                     .empty-block,
                     .muted {
                         color: #95a2c9;
@@ -944,6 +1203,12 @@ class DashboardPanel {
                         margin-top: 12px;
                         color: #8a9aca;
                         font-size: 11px;
+                    }
+
+                    @keyframes spin {
+                        to {
+                            transform: rotate(360deg);
+                        }
                     }
 
                     @media (max-width: 1060px) {
@@ -1008,21 +1273,14 @@ class DashboardPanel {
                         <div class="provider-row">
                             <div>
                                 <h2 id="resources-heading">Managed Resources</h2>
-                                <small>Git status checked: ${DashboardPanel.escapeHtml(data.gitStatusGeneratedAt)}</small>
+                                <small id="latest-commit-label">Latest commit: ${DashboardPanel.escapeHtml(data.latestCommitLabel)}</small>
+                                <div id="check-git-status" class="check-git-status"></div>
                             </div>
                             <button id="btn-check-git" class="accent-btn" type="button">Check Git Updates</button>
                         </div>
-                        <div class="resource-grid">
-                            <div>
-                                <h3>Vercel Projects (${data.vercelProjects.length})</h3>
-                                <ul>${vercelList}</ul>
-                            </div>
-                            <div>
-                                <h3>Coolify Apps (${data.coolifyApps.length})</h3>
-                                <ul>${coolifyList}</ul>
-                            </div>
+                        <div id="managed-resources-body">
+                            ${this.getManagedResourcesBodyHtml(data)}
                         </div>
-                        <div class="footer-note">Last updated: ${DashboardPanel.escapeHtml(data.generatedAt)}</div>
                     </section>
                 </main>
 
@@ -1034,27 +1292,27 @@ class DashboardPanel {
                         vscode.postMessage({ command, ...payload });
                     }
 
-                    function sendWithReply(command, payload = {}) {
+                    function sendWithReply(command, payload = {}, expectedCommand = 'redeployResult') {
                         const requestId = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
                         return new Promise((resolve) => {
-                            pendingRequests.set(requestId, resolve);
+                            pendingRequests.set(requestId, { resolve, expectedCommand });
                             send(command, { ...payload, requestId });
                         });
                     }
 
                     window.addEventListener('message', (event) => {
                         const message = event.data;
-                        if (!message || message.command !== 'redeployResult' || !message.requestId) {
+                        if (!message || !message.requestId) {
                             return;
                         }
 
-                        const resolver = pendingRequests.get(message.requestId);
-                        if (!resolver) {
+                        const pending = pendingRequests.get(message.requestId);
+                        if (!pending || pending.expectedCommand !== message.command) {
                             return;
                         }
 
                         pendingRequests.delete(message.requestId);
-                        resolver(message);
+                        pending.resolve(message);
                     });
 
                     const refreshButton = document.getElementById('btn-refresh');
@@ -1064,7 +1322,48 @@ class DashboardPanel {
 
                     const checkGitButton = document.getElementById('btn-check-git');
                     if (checkGitButton) {
-                        checkGitButton.addEventListener('click', () => send('checkGitUpdates'));
+                        checkGitButton.addEventListener('click', async () => {
+                            const resourcesBody = document.getElementById('managed-resources-body');
+                            const checkStatus = document.getElementById('check-git-status');
+                            const latestCommitLabel = document.getElementById('latest-commit-label');
+                            const originalLabel = checkGitButton.textContent || 'Check Git Updates';
+
+                            checkGitButton.disabled = true;
+                            checkGitButton.textContent = 'Checking...';
+                            if (checkStatus) {
+                                checkStatus.classList.remove('error');
+                                checkStatus.textContent = '';
+                            }
+                            if (resourcesBody) {
+                                resourcesBody.classList.add('is-loading');
+                            }
+
+                            const result = await sendWithReply('checkGitUpdates', {}, 'checkGitUpdatesResult');
+
+                            checkGitButton.disabled = false;
+                            checkGitButton.textContent = originalLabel;
+                            if (resourcesBody) {
+                                resourcesBody.classList.remove('is-loading');
+                            }
+
+                            if (result.success && resourcesBody && typeof result.sectionBodyHtml === 'string') {
+                                resourcesBody.innerHTML = result.sectionBodyHtml;
+                                if (latestCommitLabel && typeof result.latestCommitLabel === 'string') {
+                                    latestCommitLabel.textContent = 'Latest commit: ' + result.latestCommitLabel;
+                                }
+                                if (checkStatus) {
+                                    checkStatus.classList.remove('error');
+                                    checkStatus.textContent = 'Git status refreshed.';
+                                }
+                                bindResourceButtons();
+                                return;
+                            }
+
+                            if (checkStatus) {
+                                checkStatus.classList.add('error');
+                                checkStatus.textContent = 'Failed: ' + (result.error || 'Unable to refresh git status.');
+                            }
+                        });
                     }
 
                     const connectVercelButton = document.getElementById('btn-connect-vercel');
@@ -1077,6 +1376,11 @@ class DashboardPanel {
                         connectCoolifyButton.addEventListener('click', () => send('connectCoolify'));
                     }
 
+                    const connectNetlifyButton = document.getElementById('btn-connect-netlify');
+                    if (connectNetlifyButton) {
+                        connectNetlifyButton.addEventListener('click', () => send('connectNetlify'));
+                    }
+
                     const deployButton = document.getElementById('btn-deploy');
                     if (deployButton) {
                         deployButton.addEventListener('click', () => send('deployProject'));
@@ -1084,55 +1388,24 @@ class DashboardPanel {
 
                     const redeployButton = document.getElementById('btn-redeploy');
                     if (redeployButton) {
-                        redeployButton.addEventListener('click', () => send('redeployProject'));
-                    }
-
-                    const openLogsButton = document.getElementById('btn-open-logs');
-                    if (openLogsButton) {
-                        openLogsButton.addEventListener('click', () => send('openLogs'));
-                    }
-
-                    const logButtons = document.querySelectorAll('[data-action="open-logs"]');
-                    for (const logButton of logButtons) {
-                        logButton.addEventListener('click', () => {
-                            send('openLogs', {
-                                provider: logButton.getAttribute('data-provider') || undefined,
-                                projectId: logButton.getAttribute('data-project-id') || undefined,
-                                projectName: logButton.getAttribute('data-project-name') || undefined,
-                            });
-                        });
-                    }
-
-                    const redeployButtons = document.querySelectorAll('[data-action="redeploy-resource"]');
-                    for (const redeployButton of redeployButtons) {
                         redeployButton.addEventListener('click', async () => {
                             if (redeployButton.disabled) {
                                 return;
                             }
 
-                            const provider = redeployButton.getAttribute('data-provider') || '';
-                            const projectId = redeployButton.getAttribute('data-project-id') || '';
-                            const projectName = redeployButton.getAttribute('data-project-name') || '';
-                            const resourceKey = redeployButton.getAttribute('data-resource-key') || '';
-                            const statusNode = document.getElementById('redeploy-status-' + resourceKey);
-
+                            const statusNode = document.getElementById('redeploy-project-status');
                             redeployButton.disabled = true;
-                            const baseLabel = redeployButton.textContent || 'Redeploy';
+                            const baseLabel = redeployButton.textContent || 'Redeploy Project';
                             redeployButton.textContent = 'Redeploying...';
                             if (statusNode) {
                                 statusNode.classList.remove('ok', 'error');
                                 statusNode.textContent = 'In progress...';
                             }
 
-                            const result = await sendWithReply('redeployResource', {
-                                provider,
-                                projectId,
-                                projectName,
-                            });
+                            const result = await sendWithReply('redeployProject', {}, 'redeployResult');
 
                             redeployButton.disabled = false;
                             redeployButton.textContent = baseLabel;
-
                             if (statusNode) {
                                 if (result.success) {
                                     statusNode.classList.remove('error');
@@ -1146,6 +1419,78 @@ class DashboardPanel {
                             }
                         });
                     }
+
+                    const openLogsButton = document.getElementById('btn-open-logs');
+                    if (openLogsButton) {
+                        openLogsButton.addEventListener('click', () => send('openLogs'));
+                    }
+
+                    function bindResourceButtons() {
+                        const logButtons = document.querySelectorAll('[data-action="open-logs"]');
+                        for (const logButton of logButtons) {
+                            if (logButton.dataset.bound === 'true') {
+                                continue;
+                            }
+                            logButton.dataset.bound = 'true';
+                            logButton.addEventListener('click', () => {
+                                send('openLogs', {
+                                    provider: logButton.getAttribute('data-provider') || undefined,
+                                    projectId: logButton.getAttribute('data-project-id') || undefined,
+                                    projectName: logButton.getAttribute('data-project-name') || undefined,
+                                });
+                            });
+                        }
+
+                        const redeployButtons = document.querySelectorAll('[data-action="redeploy-resource"]');
+                        for (const redeployButton of redeployButtons) {
+                            if (redeployButton.dataset.bound === 'true') {
+                                continue;
+                            }
+                            redeployButton.dataset.bound = 'true';
+                            redeployButton.addEventListener('click', async () => {
+                                if (redeployButton.disabled) {
+                                    return;
+                                }
+
+                                const provider = redeployButton.getAttribute('data-provider') || '';
+                                const projectId = redeployButton.getAttribute('data-project-id') || '';
+                                const projectName = redeployButton.getAttribute('data-project-name') || '';
+                                const resourceKey = redeployButton.getAttribute('data-resource-key') || '';
+                                const statusNode = document.getElementById('redeploy-status-' + resourceKey);
+
+                                redeployButton.disabled = true;
+                                const baseLabel = redeployButton.textContent || 'Redeploy';
+                                redeployButton.textContent = 'Redeploying...';
+                                if (statusNode) {
+                                    statusNode.classList.remove('ok', 'error');
+                                    statusNode.textContent = 'In progress...';
+                                }
+
+                                const result = await sendWithReply(
+                                    'redeployResource',
+                                    { provider, projectId, projectName },
+                                    'redeployResult'
+                                );
+
+                                redeployButton.disabled = false;
+                                redeployButton.textContent = baseLabel;
+
+                                if (statusNode) {
+                                    if (result.success) {
+                                        statusNode.classList.remove('error');
+                                        statusNode.classList.add('ok');
+                                        statusNode.textContent = 'Success';
+                                    } else {
+                                        statusNode.classList.remove('ok');
+                                        statusNode.classList.add('error');
+                                        statusNode.textContent = 'Failed: ' + (result.error || 'Unknown error');
+                                    }
+                                }
+                            });
+                        }
+                    }
+
+                    bindResourceButtons();
                 </script>
             </body>
             </html>

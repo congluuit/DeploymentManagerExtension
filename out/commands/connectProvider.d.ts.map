@@ -1,1 +1,1 @@
-{"version":3,"file":"connectProvider.d.ts","sourceRoot":"","sources":["../../src/commands/connectProvider.ts"],"names":[],"mappings":"AAMA;;;GAGG;AACH,wBAAsB,aAAa,IAAI,OAAO,CAAC,OAAO,CAAC,CAiCtD;AAED;;;GAGG;AACH,wBAAsB,cAAc,IAAI,OAAO,CAAC,OAAO,CAAC,CAwDvD"}
+{"version":3,"file":"connectProvider.d.ts","sourceRoot":"","sources":["../../src/commands/connectProvider.ts"],"names":[],"mappings":"AAOA;;;GAGG;AACH,wBAAsB,aAAa,IAAI,OAAO,CAAC,OAAO,CAAC,CAgCtD;AAED;;;GAGG;AACH,wBAAsB,cAAc,IAAI,OAAO,CAAC,OAAO,CAAC,CAuDvD;AAED;;;GAGG;AACH,wBAAsB,cAAc,IAAI,OAAO,CAAC,OAAO,CAAC,CAgCvD"}

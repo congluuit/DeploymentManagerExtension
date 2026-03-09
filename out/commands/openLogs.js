@@ -35,98 +35,75 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.openLogs = openLogs;
 const vscode = __importStar(require("vscode"));
-const vercelClient_1 = require("../clients/vercelClient");
-const coolifyClient_1 = require("../clients/coolifyClient");
+const providers_1 = require("../providers");
 const secretStorage_1 = require("../utils/secretStorage");
 const types_1 = require("../utils/types");
+const PROVIDER_CONNECTION_KEYS = {
+    Vercel: types_1.StorageKeys.VERCEL_TOKEN,
+    Coolify: types_1.StorageKeys.COOLIFY_TOKEN,
+    Netlify: types_1.StorageKeys.NETLIFY_TOKEN,
+};
+function isProviderName(value) {
+    return value === 'Vercel' || value === 'Coolify' || value === 'Netlify';
+}
 /**
  * Open deployment logs in a Webview panel.
- * Supports both Vercel deployments and Coolify applications.
+ * Supports Vercel, Coolify, and Netlify resources.
  */
 async function openLogs(provider, projectId, projectName) {
     if (!provider || !projectId) {
-        // Prompt user to select
         const storage = secretStorage_1.SecretStorageManager.getInstance();
-        const hasVercel = await storage.has(types_1.StorageKeys.VERCEL_TOKEN);
-        const hasCoolify = await storage.has(types_1.StorageKeys.COOLIFY_TOKEN);
-        if (!hasVercel && !hasCoolify) {
+        const connectedProviders = [];
+        for (const name of Object.keys(PROVIDER_CONNECTION_KEYS)) {
+            if (await storage.has(PROVIDER_CONNECTION_KEYS[name])) {
+                connectedProviders.push(name);
+            }
+        }
+        if (connectedProviders.length === 0) {
             vscode.window.showErrorMessage('No providers connected. Connect a provider first.');
             return;
         }
-        const items = [];
-        if (hasVercel) {
-            items.push({ label: 'Vercel', description: 'View Vercel deployment logs' });
-        }
-        if (hasCoolify) {
-            items.push({ label: 'Coolify', description: 'View Coolify application logs' });
-        }
-        const selected = await vscode.window.showQuickPick(items, {
-            placeHolder: 'Select a provider to view logs from',
-        });
-        if (!selected) {
+        const selectedProvider = await vscode.window.showQuickPick(connectedProviders.map((name) => ({
+            label: name,
+            description: `View ${name} deployment logs`,
+        })), { placeHolder: 'Select a provider to view logs from', ignoreFocusOut: true });
+        if (!selectedProvider) {
             return;
         }
-        provider = selected.label;
-        // Get project list and let user select
-        if (provider === 'Vercel') {
-            const vercel = new vercelClient_1.VercelClient();
-            const projects = await vercel.listProjects();
-            const projectPick = await vscode.window.showQuickPick(projects.map((p) => ({ label: p.name, description: p.id, id: p.id })), { placeHolder: 'Select a Vercel project' });
-            if (!projectPick) {
-                return;
-            }
-            projectId = projectPick.id;
-            projectName = projectPick.label;
+        provider = selectedProvider.label;
+        const adapter = (0, providers_1.getProvider)(provider);
+        const projects = await adapter.listProjects();
+        if (projects.length === 0) {
+            vscode.window.showWarningMessage(`No ${provider} projects found.`);
+            return;
         }
-        else {
-            const coolify = new coolifyClient_1.CoolifyClient();
-            const apps = await coolify.listApplications();
-            const appPick = await vscode.window.showQuickPick(apps.map((a) => ({ label: a.name, description: a.uuid, id: a.uuid })), { placeHolder: 'Select a Coolify application' });
-            if (!appPick) {
-                return;
-            }
-            projectId = appPick.id;
-            projectName = appPick.label;
+        const projectPick = await vscode.window.showQuickPick(projects.map((project) => ({
+            label: project.name,
+            description: project.id,
+            id: project.id,
+        })), { placeHolder: `Select a ${provider} project`, ignoreFocusOut: true });
+        if (!projectPick) {
+            return;
         }
+        projectId = projectPick.id;
+        projectName = projectPick.label;
     }
+    if (!isProviderName(provider)) {
+        vscode.window.showErrorMessage('Unknown provider selected.');
+        return;
+    }
+    const providerName = provider;
     const displayName = projectName || projectId;
-    // Create Webview panel
     const panel = vscode.window.createWebviewPanel('deploymentLogs', `Logs: ${displayName}`, vscode.ViewColumn.One, { enableScripts: true });
     panel.webview.html = getLoadingHtml(displayName);
     try {
-        let logsContent = '';
-        if (provider === 'Vercel') {
-            const vercel = new vercelClient_1.VercelClient();
-            const deployments = await vercel.listDeployments(projectId, 5);
-            if (deployments.length === 0) {
-                logsContent = 'No deployments found for this project.';
-            }
-            else {
-                const lines = [];
-                for (const d of deployments) {
-                    const date = new Date(d.created).toLocaleString();
-                    lines.push(`─── Deployment ${d.uid.substring(0, 8)} ───`);
-                    lines.push(`  URL:     ${d.url || 'N/A'}`);
-                    lines.push(`  State:   ${d.state}`);
-                    lines.push(`  Created: ${date}`);
-                    lines.push(`  Source:  ${d.source || 'N/A'}`);
-                    lines.push('');
-                }
-                logsContent = lines.join('\n');
-            }
-        }
-        else if (provider === 'Coolify') {
-            const coolify = new coolifyClient_1.CoolifyClient();
-            logsContent = await coolify.getApplicationLogs(projectId);
-            if (!logsContent) {
-                logsContent = 'No logs available for this application.';
-            }
-        }
-        panel.webview.html = getLogsHtml(displayName, logsContent, provider);
+        const adapter = (0, providers_1.getProvider)(providerName);
+        const logsContent = await adapter.getLogs(projectId);
+        panel.webview.html = getLogsHtml(displayName, logsContent, providerName);
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        panel.webview.html = getLogsHtml(displayName, `Error fetching logs: ${message}`, provider || 'Unknown');
+        panel.webview.html = getLogsHtml(displayName, `Error fetching logs: ${message}`, providerName);
     }
 }
 function getLoadingHtml(name) {
@@ -162,7 +139,7 @@ function getLoadingHtml(name) {
       </style>
     </head>
     <body>
-      <h2>📋 ${escapeHtml(name)}</h2>
+      <h2>${escapeHtml(name)}</h2>
       <div class="loading">
         <div class="spinner"></div>
         <span>Loading logs...</span>
@@ -171,7 +148,7 @@ function getLoadingHtml(name) {
     </html>`;
 }
 function getLogsHtml(name, logs, provider) {
-    const providerIcon = provider === 'Vercel' ? '▲' : '🧊';
+    const providerIcon = provider === 'Vercel' ? '[V]' : provider === 'Coolify' ? '[C]' : '[N]';
     return `
     <!DOCTYPE html>
     <html>
@@ -209,7 +186,7 @@ function getLogsHtml(name, logs, provider) {
       </style>
     </head>
     <body>
-      <h2>📋 ${escapeHtml(name)}</h2>
+      <h2>${escapeHtml(name)}</h2>
       <span class="provider-badge">${providerIcon} ${escapeHtml(provider)}</span>
       <pre>${escapeHtml(logs)}</pre>
     </body>

@@ -1,28 +1,25 @@
-# Deployment Manager — VSCode Extension
+# Deployment Manager - VSCode Extension
 
-> A full deployment dashboard for Antigravity that integrates with **Vercel** and **Coolify**.  
-> Manage cloud deployments directly inside your editor — no external dashboards needed.
+A deployment dashboard for Antigravity that integrates with Vercel, Coolify, and Netlify.
+Manage cloud deployments directly inside your editor.
 
----
+## Features
 
-## ✨ Features
+- Activity Bar icon for quick access
+- Dashboard TreeView + rich Dashboard tab
+- Vercel integration: list projects, deploy, redeploy, view deployment logs
+- Coolify integration: list applications, deploy, redeploy, view logs
+- Netlify integration: list sites, deploy, redeploy, view deploy/build logs
+- Duplicate deploy prevention (deploy only for new projects)
+- GitHub commit watcher with deploy/redeploy prompts
+- Secure credential storage via VSCode SecretStorage
 
-- **Activity Bar icon** — Always-visible rocket icon in the sidebar
-- **Dashboard TreeView** — See your current project, connected providers, remote projects, and actions at a glance
-- **Vercel integration** — List projects, deploy, redeploy, view deployment logs
-- **Coolify integration** — List applications, deploy, redeploy, view logs
-- **Duplicate deploy prevention** — Automatically detects if a project exists remotely (Redeploy only) or is new (Deploy)
-- **GitHub commit watcher** — Polls for new commits every 60s and shows deploy/redeploy notifications
-- **Secure credential storage** — Tokens stored via VSCode SecretStorage API (never in plain files)
-
----
-
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+)
-- [npm](https://www.npmjs.com/) (v9+)
+- Node.js v18+
+- npm v9+
 
 ### Install Dependencies
 
@@ -30,14 +27,13 @@
 npm install
 ```
 
-### Run Locally (Development)
+### Run Locally
 
 1. Open this folder in VSCode / Antigravity
-2. Press **F5** to launch the Extension Development Host
-3. The **Deployment Manager** icon (🚀) appears in the Activity Bar
-4. Click the icon to open the dashboard
+2. Press `F5` to launch the Extension Development Host
+3. Click the Deployment Manager icon in the Activity Bar
 
-### Compile
+### Build
 
 ```bash
 npm run compile
@@ -49,81 +45,74 @@ npm run compile
 npm run watch
 ```
 
----
-
-## 📦 Package as VSIX
-
-To package the extension for manual installation:
+## Package as VSIX
 
 ```bash
 npx @vscode/vsce package --allow-missing-repository
 ```
 
-This generates a `.vsix` file in the project root. To install it in Antigravity:
-
-1. Open the command palette (`Ctrl+Shift+P`)
-2. Run **Extensions: Install from VSIX...**
-3. Select the generated `.vsix` file
-
----
-
-## 🔑 Connecting Providers
+## Connecting Providers
 
 ### Vercel
 
-1. Open the command palette → **Deployment Manager: Connect Vercel**
-2. Enter your [Vercel API token](https://vercel.com/account/tokens)
-3. The token is validated and stored securely
+1. Run `Deployment Manager: Connect Vercel`
+2. Enter your Vercel API token
 
 ### Coolify
 
-1. Open the command palette → **Deployment Manager: Connect Coolify**
-2. Enter your Coolify instance URL (e.g., `https://coolify.example.com`)
+1. Run `Deployment Manager: Connect Coolify`
+2. Enter your Coolify instance URL
 3. Enter your Coolify API token
-4. The connection is validated and credentials are stored securely
 
----
+### Netlify
 
-## 📋 Available Commands
+1. Run `Deployment Manager: Connect Netlify`
+2. Enter your Netlify personal access token
 
-| Command | Description |
-|---------|-------------|
-| `Deployment Manager: Connect Vercel` | Connect to Vercel with an API token |
-| `Deployment Manager: Connect Coolify` | Connect to Coolify with URL + token |
-| `Deployment Manager: Deploy Project` | Deploy current project (first-time only) |
-| `Deployment Manager: Redeploy Project` | Redeploy existing project |
-| `Deployment Manager: Refresh Projects` | Refresh all project lists |
-| `Deployment Manager: Open Deployment Logs` | View deployment logs in a webview |
+## Commands
 
----
+- `Deployment Manager: Open Dashboard`
+- `Deployment Manager: Connect Vercel`
+- `Deployment Manager: Connect Coolify`
+- `Deployment Manager: Connect Netlify`
+- `Deployment Manager: Deploy Project`
+- `Deployment Manager: Redeploy Project`
+- `Deployment Manager: Refresh Projects`
+- `Deployment Manager: Open Deployment Logs`
 
-## 🏗️ Project Structure
+## Project Structure
 
-```
+```text
 src/
-├── extension.ts              # Activation entry point
-├── clients/
-│   ├── vercelClient.ts       # Vercel REST API client
-│   ├── coolifyClient.ts      # Coolify REST API client
-│   └── githubClient.ts       # GitHub commits API client
-├── services/
-│   ├── projectDetector.ts    # Workspace project detection
-│   └── commitWatcher.ts      # GitHub commit polling
-├── commands/
-│   ├── connectProvider.ts    # Connect Vercel / Coolify
-│   ├── deployProject.ts      # First deployment
-│   ├── redeployProject.ts    # Redeployment
-│   ├── refreshProjects.ts    # Refresh project lists
-│   └── openLogs.ts           # View deployment logs
-├── views/
-│   └── dashboardProvider.ts  # TreeView dashboard
-└── utils/
-    ├── secretStorage.ts      # Secure token storage
-    └── types.ts              # Shared interfaces
+|-- extension.ts
+|-- clients/
+|   |-- vercelClient.ts
+|   |-- coolifyClient.ts
+|   |-- netlifyClient.ts
+|   `-- githubClient.ts
+|-- providers/
+|   |-- vercelProvider.ts
+|   |-- coolifyProvider.ts
+|   |-- netlifyProvider.ts
+|   `-- providerTypes.ts
+|-- services/
+|   |-- projectDetector.ts
+|   `-- commitWatcher.ts
+|-- commands/
+|   |-- connectProvider.ts
+|   |-- deployProject.ts
+|   |-- redeployProject.ts
+|   |-- refreshProjects.ts
+|   `-- openLogs.ts
+|-- views/
+|   |-- dashboardProvider.ts
+|   |-- dashboardPanel.ts
+|   `-- dashboardLauncherProvider.ts
+`-- utils/
+    |-- secretStorage.ts
+    `-- types.ts
 ```
 
----
-
-## 📝 License
+## License
 
 MIT

@@ -21,7 +21,7 @@ export interface ProjectInfo {
 /** Status of a provider connection. */
 export interface ProviderStatus {
     connected: boolean;
-    name: 'Vercel' | 'Coolify';
+    name: 'Vercel' | 'Coolify' | 'Netlify';
     baseUrl?: string;
 }
 
@@ -76,6 +76,64 @@ export interface CoolifyApplication {
     updated_at: string;
 }
 
+/** Netlify repository metadata as returned by the API. */
+export interface NetlifyRepoInfo {
+    id?: number;
+    provider?: string;
+    repo_path?: string;
+    repo_branch?: string;
+    repo_url?: string;
+}
+
+/** Netlify deploy as returned by the API. */
+export interface NetlifyDeploy {
+    id: string;
+    site_id: string;
+    build_id?: string;
+    state: string;
+    name?: string;
+    url?: string;
+    ssl_url?: string;
+    admin_url?: string;
+    deploy_url?: string;
+    deploy_ssl_url?: string;
+    error_message?: string;
+    branch?: string;
+    commit_ref?: string;
+    created_at?: string;
+    updated_at?: string;
+    published_at?: string;
+    title?: string;
+    context?: string;
+}
+
+/** Netlify build as returned by the API. */
+export interface NetlifyBuild {
+    id: string;
+    deploy_id?: string;
+    sha?: string;
+    done?: boolean;
+    error?: string;
+    created_at?: string;
+}
+
+/** Netlify site as returned by the API. */
+export interface NetlifySite {
+    id: string;
+    name: string;
+    state?: string;
+    url?: string;
+    ssl_url?: string;
+    admin_url?: string;
+    deploy_url?: string;
+    created_at?: string;
+    updated_at?: string;
+    build_settings?: NetlifyRepoInfo;
+    repo?: NetlifyRepoInfo;
+    deploy_hook?: string;
+    published_deploy?: NetlifyDeploy;
+}
+
 /** Result from GitHub commits endpoint. */
 export interface GitHubCommit {
     sha: string;
@@ -96,6 +154,7 @@ export type DashboardItemType =
     | 'providerStatus'
     | 'vercelProject'
     | 'coolifyApp'
+    | 'netlifySite'
     | 'deployAction'
     | 'redeployAction'
     | 'connectAction'
@@ -106,5 +165,6 @@ export const StorageKeys = {
     VERCEL_TOKEN: 'deploymentManager.vercel.token',
     COOLIFY_TOKEN: 'deploymentManager.coolify.token',
     COOLIFY_BASE_URL: 'deploymentManager.coolify.baseUrl',
+    NETLIFY_TOKEN: 'deploymentManager.netlify.token',
     GITHUB_TOKEN: 'deploymentManager.github.token',
 } as const;

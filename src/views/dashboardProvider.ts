@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { VercelClient } from '../clients/vercelClient';
 import { CoolifyClient } from '../clients/coolifyClient';
+import { NetlifyClient } from '../clients/netlifyClient';
 import { ProjectDetector } from '../services/projectDetector';
 import { SecretStorageManager } from '../utils/secretStorage';
 import {
@@ -9,6 +10,7 @@ import {
     ProjectInfo,
     VercelProject,
     CoolifyApplication,
+    NetlifySite,
 } from '../utils/types';
 
 /**
@@ -49,6 +51,10 @@ export class DashboardItem extends vscode.TreeItem {
                 this.iconPath = new vscode.ThemeIcon('server');
                 this.contextValue = 'coolifyApp';
                 break;
+            case 'netlifySite':
+                this.iconPath = new vscode.ThemeIcon('cloud');
+                this.contextValue = 'netlifySite';
+                break;
             case 'deployAction':
                 this.iconPath = new vscode.ThemeIcon('cloud-upload');
                 this.contextValue = 'deployAction';
@@ -86,10 +92,13 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
     private projectInfo: ProjectInfo | null = null;
     private vercelConnected = false;
     private coolifyConnected = false;
+    private netlifyConnected = false;
     private vercelProjects: VercelProject[] = [];
     private coolifyApps: CoolifyApplication[] = [];
+    private netlifySites: NetlifySite[] = [];
     private projectExistsOnVercel = false;
     private projectExistsOnCoolify = false;
+    private projectExistsOnNetlify = false;
     private isLoading = false;
 
     /** Refresh the tree view data. */
@@ -106,12 +115,15 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
             const storage = SecretStorageManager.getInstance();
             this.vercelConnected = await storage.has(StorageKeys.VERCEL_TOKEN);
             this.coolifyConnected = await storage.has(StorageKeys.COOLIFY_TOKEN);
+            this.netlifyConnected = await storage.has(StorageKeys.NETLIFY_TOKEN);
 
             // Fetch projects from connected providers
             this.vercelProjects = [];
             this.coolifyApps = [];
+            this.netlifySites = [];
             this.projectExistsOnVercel = false;
             this.projectExistsOnCoolify = false;
+            this.projectExistsOnNetlify = false;
 
             if (this.vercelConnected) {
                 try {
@@ -146,6 +158,23 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
                     // Failed to fetch — keep empty list
                 }
             }
+
+            if (this.netlifyConnected) {
+                try {
+                    const netlify = new NetlifyClient();
+                    this.netlifySites = await netlify.listSites();
+
+                    if (this.projectInfo) {
+                        const match = await netlify.findSiteByNameOrRepo(
+                            this.projectInfo.name,
+                            this.projectInfo.repoUrl
+                        );
+                        this.projectExistsOnNetlify = match !== null;
+                    }
+                } catch {
+                    // Failed to fetch - keep empty list
+                }
+            }
         } catch {
             // Error during refresh
         }
@@ -156,7 +185,7 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
 
     /** Whether the current project exists on any provider. */
     get projectExistsRemotely(): boolean {
-        return this.projectExistsOnVercel || this.projectExistsOnCoolify;
+        return this.projectExistsOnVercel || this.projectExistsOnCoolify || this.projectExistsOnNetlify;
     }
 
     /** Get the detected project info. */
@@ -190,6 +219,8 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
                 return this.getVercelProjectItems();
             case '🧊 Coolify Applications':
                 return this.getCoolifyAppItems();
+            case '◼ Netlify Sites':
+                return this.getNetlifySiteItems();
             case '⚡ Actions':
                 return this.getActionItems();
             default:
@@ -212,6 +243,12 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         if (this.coolifyConnected) {
             items.push(
                 new DashboardItem('🧊 Coolify Applications', 'header', vscode.TreeItemCollapsibleState.Collapsed)
+            );
+        }
+
+        if (this.netlifyConnected) {
+            items.push(
+                new DashboardItem('◼ Netlify Sites', 'header', vscode.TreeItemCollapsibleState.Collapsed)
             );
         }
 
@@ -256,10 +293,11 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         items.push(branchItem);
 
         // Deployment status
-        const existsRemotely = this.projectExistsOnVercel || this.projectExistsOnCoolify;
+        const existsRemotely = this.projectExistsOnVercel || this.projectExistsOnCoolify || this.projectExistsOnNetlify;
         const providers: string[] = [];
         if (this.projectExistsOnVercel) { providers.push('Vercel'); }
         if (this.projectExistsOnCoolify) { providers.push('Coolify'); }
+        if (this.projectExistsOnNetlify) { providers.push('Netlify'); }
 
         const statusText = existsRemotely
             ? `Status: Deployed (${providers.join(', ')})`
@@ -306,6 +344,19 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         }
         items.push(coolifyItem);
 
+        const netlifyItem = new DashboardItem(
+            this.netlifyConnected ? 'Netlify ✅ Connected' : 'Netlify ❌ Not Connected',
+            this.netlifyConnected ? 'providerStatus' : 'connectAction',
+            vscode.TreeItemCollapsibleState.None
+        );
+        if (!this.netlifyConnected) {
+            netlifyItem.command = {
+                command: 'deploymentManager.connectNetlify',
+                title: 'Connect Netlify',
+            };
+        }
+        items.push(netlifyItem);
+
         return items;
     }
 
@@ -349,10 +400,30 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         });
     }
 
+    private getNetlifySiteItems(): DashboardItem[] {
+        if (this.netlifySites.length === 0) {
+            return [
+                new DashboardItem('No sites found', 'noItems', vscode.TreeItemCollapsibleState.None),
+            ];
+        }
+
+        return this.netlifySites.map((site) => {
+            const item = new DashboardItem(
+                site.name,
+                'netlifySite',
+                vscode.TreeItemCollapsibleState.None,
+                { provider: 'Netlify', projectId: site.id, projectName: site.name }
+            );
+            item.description = site.state || '';
+            item.tooltip = `Netlify site: ${site.name}\nID: ${site.id}\nState: ${site.state || 'N/A'}\nURL: ${site.ssl_url || site.url || 'N/A'}`;
+            return item;
+        });
+    }
+
     private getActionItems(): DashboardItem[] {
         const items: DashboardItem[] = [];
 
-        if (!this.vercelConnected && !this.coolifyConnected) {
+        if (!this.vercelConnected && !this.coolifyConnected && !this.netlifyConnected) {
             items.push(
                 new DashboardItem(
                     'Connect a provider to get started',
@@ -363,7 +434,7 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
             return items;
         }
 
-        const existsRemotely = this.projectExistsOnVercel || this.projectExistsOnCoolify;
+        const existsRemotely = this.projectExistsOnVercel || this.projectExistsOnCoolify || this.projectExistsOnNetlify;
 
         if (!existsRemotely) {
             items.push(

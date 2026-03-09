@@ -35,11 +35,13 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.connectVercel = connectVercel;
 exports.connectCoolify = connectCoolify;
+exports.connectNetlify = connectNetlify;
 const vscode = __importStar(require("vscode"));
 const secretStorage_1 = require("../utils/secretStorage");
 const types_1 = require("../utils/types");
 const vercelClient_1 = require("../clients/vercelClient");
 const coolifyClient_1 = require("../clients/coolifyClient");
+const netlifyClient_1 = require("../clients/netlifyClient");
 /**
  * Connect to Vercel by prompting for an API token.
  * Validates the token and stores it securely.
@@ -62,18 +64,15 @@ async function connectVercel() {
     }
     const storage = secretStorage_1.SecretStorageManager.getInstance();
     await storage.store(types_1.StorageKeys.VERCEL_TOKEN, token.trim());
-    // Validate the token
     const client = new vercelClient_1.VercelClient();
     const valid = await client.validateToken();
     if (valid) {
-        vscode.window.showInformationMessage('✅ Successfully connected to Vercel!');
+        vscode.window.showInformationMessage('Successfully connected to Vercel.');
         return true;
     }
-    else {
-        await storage.delete(types_1.StorageKeys.VERCEL_TOKEN);
-        vscode.window.showErrorMessage('❌ Invalid Vercel API token. Please check your token and try again.');
-        return false;
-    }
+    await storage.delete(types_1.StorageKeys.VERCEL_TOKEN);
+    vscode.window.showErrorMessage('Invalid Vercel API token. Please check your token and try again.');
+    return false;
 }
 /**
  * Connect to Coolify by prompting for base URL and API token.
@@ -118,18 +117,47 @@ async function connectCoolify() {
     const storage = secretStorage_1.SecretStorageManager.getInstance();
     await storage.store(types_1.StorageKeys.COOLIFY_BASE_URL, baseUrl.trim());
     await storage.store(types_1.StorageKeys.COOLIFY_TOKEN, token.trim());
-    // Validate the connection
     const client = new coolifyClient_1.CoolifyClient();
     const valid = await client.validateConnection();
     if (valid) {
-        vscode.window.showInformationMessage('✅ Successfully connected to Coolify!');
+        vscode.window.showInformationMessage('Successfully connected to Coolify.');
         return true;
     }
-    else {
-        await storage.delete(types_1.StorageKeys.COOLIFY_BASE_URL);
-        await storage.delete(types_1.StorageKeys.COOLIFY_TOKEN);
-        vscode.window.showErrorMessage('❌ Failed to connect to Coolify. Please check your URL and token.');
+    await storage.delete(types_1.StorageKeys.COOLIFY_BASE_URL);
+    await storage.delete(types_1.StorageKeys.COOLIFY_TOKEN);
+    vscode.window.showErrorMessage('Failed to connect to Coolify. Please check your URL and token.');
+    return false;
+}
+/**
+ * Connect to Netlify by prompting for an API token.
+ * Validates the token and stores it securely.
+ */
+async function connectNetlify() {
+    const token = await vscode.window.showInputBox({
+        prompt: 'Enter your Netlify personal access token',
+        placeHolder: 'nfp_xxxxxxxxxxxx',
+        password: true,
+        ignoreFocusOut: true,
+        validateInput: (value) => {
+            if (!value || value.trim().length === 0) {
+                return 'API token is required';
+            }
+            return null;
+        },
+    });
+    if (!token) {
         return false;
     }
+    const storage = secretStorage_1.SecretStorageManager.getInstance();
+    await storage.store(types_1.StorageKeys.NETLIFY_TOKEN, token.trim());
+    const client = new netlifyClient_1.NetlifyClient();
+    const valid = await client.validateToken();
+    if (valid) {
+        vscode.window.showInformationMessage('Successfully connected to Netlify.');
+        return true;
+    }
+    await storage.delete(types_1.StorageKeys.NETLIFY_TOKEN);
+    vscode.window.showErrorMessage('Invalid Netlify API token. Please check your token and try again.');
+    return false;
 }
 //# sourceMappingURL=connectProvider.js.map

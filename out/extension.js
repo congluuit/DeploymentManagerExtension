@@ -97,12 +97,18 @@ function activate(context) {
             await doRefresh();
         }
     }));
+    context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.connectNetlify', async () => {
+        const success = await (0, connectProvider_1.connectNetlify)();
+        if (success) {
+            await doRefresh();
+        }
+    }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.deployProject', async () => {
         await (0, deployProject_1.deployProject)(doRefresh);
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.redeployProject', async (payload) => {
         const target = payload?.target;
-        const provider = target?.provider === 'Vercel' || target?.provider === 'Coolify'
+        const provider = target?.provider === 'Vercel' || target?.provider === 'Coolify' || target?.provider === 'Netlify'
             ? target.provider
             : undefined;
         const parsedTarget = provider &&
@@ -112,7 +118,11 @@ function activate(context) {
             target.name.length > 0
             ? { provider, id: target.id, name: target.name }
             : undefined;
-        return (0, redeployProject_1.redeployProject)(doRefresh, { target: parsedTarget, notify: payload?.notify });
+        return (0, redeployProject_1.redeployProject)(doRefresh, {
+            target: parsedTarget,
+            notify: payload?.notify,
+            refreshDashboard: payload?.refresh,
+        });
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.refreshProjects', async () => {
         await (0, refreshProjects_1.refreshProjects)(doRefresh);

@@ -9,6 +9,7 @@ exports.StorageKeys = {
     VERCEL_TOKEN: 'deploymentManager.vercel.token',
     COOLIFY_TOKEN: 'deploymentManager.coolify.token',
     COOLIFY_BASE_URL: 'deploymentManager.coolify.baseUrl',
+    NETLIFY_TOKEN: 'deploymentManager.netlify.token',
     GITHUB_TOKEN: 'deploymentManager.github.token',
 };
 //# sourceMappingURL=types.js.map

@@ -4,11 +4,12 @@ import { DashboardProvider } from './views/dashboardProvider';
 import { DashboardLauncherProvider } from './views/dashboardLauncherProvider';
 import { DashboardPanel } from './views/dashboardPanel';
 import { CommitWatcher } from './services/commitWatcher';
-import { connectVercel, connectCoolify } from './commands/connectProvider';
+import { connectVercel, connectCoolify, connectNetlify } from './commands/connectProvider';
 import { deployProject } from './commands/deployProject';
 import { redeployProject } from './commands/redeployProject';
 import { refreshProjects } from './commands/refreshProjects';
 import { openLogs } from './commands/openLogs';
+import { ProviderName } from './providers/providerTypes';
 
 let commitWatcher: CommitWatcher | null = null;
 
@@ -82,16 +83,25 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('deploymentManager.connectNetlify', async () => {
+            const success = await connectNetlify();
+            if (success) {
+                await doRefresh();
+            }
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('deploymentManager.deployProject', async () => {
             await deployProject(doRefresh);
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('deploymentManager.redeployProject', async (payload?: { target?: { provider?: string; id?: string; name?: string }; notify?: boolean }) => {
+        vscode.commands.registerCommand('deploymentManager.redeployProject', async (payload?: { target?: { provider?: string; id?: string; name?: string }; notify?: boolean; refresh?: boolean }) => {
             const target = payload?.target;
-            const provider: 'Vercel' | 'Coolify' | undefined =
-                target?.provider === 'Vercel' || target?.provider === 'Coolify'
+            const provider: ProviderName | undefined =
+                target?.provider === 'Vercel' || target?.provider === 'Coolify' || target?.provider === 'Netlify'
                     ? target.provider
                     : undefined;
             const parsedTarget =
@@ -102,7 +112,11 @@ export function activate(context: vscode.ExtensionContext): void {
                     target.name.length > 0
                     ? { provider, id: target.id, name: target.name }
                     : undefined;
-            return redeployProject(doRefresh, { target: parsedTarget, notify: payload?.notify });
+            return redeployProject(doRefresh, {
+                target: parsedTarget,
+                notify: payload?.notify,
+                refreshDashboard: payload?.refresh,
+            });
         })
     );
 

@@ -19,7 +19,7 @@ export interface ProjectInfo {
 /** Status of a provider connection. */
 export interface ProviderStatus {
     connected: boolean;
-    name: 'Vercel' | 'Coolify';
+    name: 'Vercel' | 'Coolify' | 'Netlify';
     baseUrl?: string;
 }
 /** Vercel project as returned by the API. */
@@ -70,6 +70,60 @@ export interface CoolifyApplication {
     created_at: string;
     updated_at: string;
 }
+/** Netlify repository metadata as returned by the API. */
+export interface NetlifyRepoInfo {
+    id?: number;
+    provider?: string;
+    repo_path?: string;
+    repo_branch?: string;
+    repo_url?: string;
+}
+/** Netlify deploy as returned by the API. */
+export interface NetlifyDeploy {
+    id: string;
+    site_id: string;
+    build_id?: string;
+    state: string;
+    name?: string;
+    url?: string;
+    ssl_url?: string;
+    admin_url?: string;
+    deploy_url?: string;
+    deploy_ssl_url?: string;
+    error_message?: string;
+    branch?: string;
+    commit_ref?: string;
+    created_at?: string;
+    updated_at?: string;
+    published_at?: string;
+    title?: string;
+    context?: string;
+}
+/** Netlify build as returned by the API. */
+export interface NetlifyBuild {
+    id: string;
+    deploy_id?: string;
+    sha?: string;
+    done?: boolean;
+    error?: string;
+    created_at?: string;
+}
+/** Netlify site as returned by the API. */
+export interface NetlifySite {
+    id: string;
+    name: string;
+    state?: string;
+    url?: string;
+    ssl_url?: string;
+    admin_url?: string;
+    deploy_url?: string;
+    created_at?: string;
+    updated_at?: string;
+    build_settings?: NetlifyRepoInfo;
+    repo?: NetlifyRepoInfo;
+    deploy_hook?: string;
+    published_deploy?: NetlifyDeploy;
+}
 /** Result from GitHub commits endpoint. */
 export interface GitHubCommit {
     sha: string;
@@ -83,12 +137,13 @@ export interface GitHubCommit {
     html_url: string;
 }
 /** Tree item types used in the dashboard. */
-export type DashboardItemType = 'header' | 'projectInfo' | 'providerStatus' | 'vercelProject' | 'coolifyApp' | 'deployAction' | 'redeployAction' | 'connectAction' | 'noItems';
+export type DashboardItemType = 'header' | 'projectInfo' | 'providerStatus' | 'vercelProject' | 'coolifyApp' | 'netlifySite' | 'deployAction' | 'redeployAction' | 'connectAction' | 'noItems';
 /** Storage keys for SecretStorage. */
 export declare const StorageKeys: {
     readonly VERCEL_TOKEN: "deploymentManager.vercel.token";
     readonly COOLIFY_TOKEN: "deploymentManager.coolify.token";
     readonly COOLIFY_BASE_URL: "deploymentManager.coolify.baseUrl";
+    readonly NETLIFY_TOKEN: "deploymentManager.netlify.token";
     readonly GITHUB_TOKEN: "deploymentManager.github.token";
 };
 //# sourceMappingURL=types.d.ts.map

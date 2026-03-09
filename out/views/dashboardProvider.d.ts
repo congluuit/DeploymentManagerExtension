@@ -29,10 +29,13 @@ export declare class DashboardProvider implements vscode.TreeDataProvider<Dashbo
     private projectInfo;
     private vercelConnected;
     private coolifyConnected;
+    private netlifyConnected;
     private vercelProjects;
     private coolifyApps;
+    private netlifySites;
     private projectExistsOnVercel;
     private projectExistsOnCoolify;
+    private projectExistsOnNetlify;
     private isLoading;
     /** Refresh the tree view data. */
     refresh(): Promise<void>;
@@ -47,6 +50,7 @@ export declare class DashboardProvider implements vscode.TreeDataProvider<Dashbo
     private getProviderItems;
     private getVercelProjectItems;
     private getCoolifyAppItems;
+    private getNetlifySiteItems;
     private getActionItems;
 }
 //# sourceMappingURL=dashboardProvider.d.ts.map

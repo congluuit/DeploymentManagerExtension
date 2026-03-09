@@ -1,7 +1,7 @@
 {
   "name": "deployment-manager",
   "displayName": "Deployment Manager",
-  "description": "A full deployment dashboard for Antigravity that integrates with Vercel and Coolify. Manage cloud deployments directly inside your editor.",
+  "description": "A full deployment dashboard for Antigravity that integrates with Vercel, Coolify, and Netlify. Manage cloud deployments directly inside your editor.",
   "version": "1.0.0",
   "publisher": "deployment-manager",
   "engines": {
@@ -47,6 +47,10 @@
       {
         "command": "deploymentManager.connectCoolify",
         "title": "Deployment Manager: Connect Coolify"
+      },
+      {
+        "command": "deploymentManager.connectNetlify",
+        "title": "Deployment Manager: Connect Netlify"
       },
       {
         "command": "deploymentManager.deployProject",
@@ -95,12 +99,12 @@
         },
         {
           "command": "deploymentManager.redeployProject",
-          "when": "viewItem == redeployAction || viewItem == vercelProject || viewItem == coolifyApp",
+          "when": "viewItem == redeployAction || viewItem == vercelProject || viewItem == coolifyApp || viewItem == netlifySite",
           "group": "inline"
         },
         {
           "command": "deploymentManager.openLogs",
-          "when": "viewItem == vercelProject || viewItem == coolifyApp",
+          "when": "viewItem == vercelProject || viewItem == coolifyApp || viewItem == netlifySite",
           "group": "inline"
         }
       ]
