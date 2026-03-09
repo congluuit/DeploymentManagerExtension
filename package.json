@@ -1,0 +1,122 @@
+{
+  "name": "deployment-manager",
+  "displayName": "Deployment Manager",
+  "description": "A full deployment dashboard for Antigravity that integrates with Vercel and Coolify. Manage cloud deployments directly inside your editor.",
+  "version": "1.0.0",
+  "publisher": "deployment-manager",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "deployment-manager",
+          "title": "Deployment Manager",
+          "icon": "assets/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "deployment-manager": [
+        {
+          "id": "deploymentManagerDashboard",
+          "name": "Dashboard",
+          "icon": "assets/icon.svg",
+          "contextualTitle": "Deployment Manager"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "deploymentManager.openDashboard",
+        "title": "Deployment Manager: Open Dashboard",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "deploymentManager.connectVercel",
+        "title": "Deployment Manager: Connect Vercel"
+      },
+      {
+        "command": "deploymentManager.connectCoolify",
+        "title": "Deployment Manager: Connect Coolify"
+      },
+      {
+        "command": "deploymentManager.deployProject",
+        "title": "Deployment Manager: Deploy Project",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "deploymentManager.redeployProject",
+        "title": "Deployment Manager: Redeploy Project",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "deploymentManager.refreshProjects",
+        "title": "Deployment Manager: Refresh Projects",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "deploymentManager.openLogs",
+        "title": "Deployment Manager: Open Deployment Logs",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "deploymentManager.openDashboard",
+          "when": "view == deploymentManagerDashboard",
+          "group": "navigation@1"
+        },
+        {
+          "command": "deploymentManager.refreshProjects",
+          "when": "view == deploymentManagerDashboard",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "deploymentManager.openDashboard",
+          "when": "viewItem == dashboardLauncher",
+          "group": "inline@1"
+        },
+        {
+          "command": "deploymentManager.deployProject",
+          "when": "viewItem == deployAction",
+          "group": "inline"
+        },
+        {
+          "command": "deploymentManager.redeployProject",
+          "when": "viewItem == redeployAction || viewItem == vercelProject || viewItem == coolifyApp",
+          "group": "inline"
+        },
+        {
+          "command": "deploymentManager.openLogs",
+          "when": "viewItem == vercelProject || viewItem == coolifyApp",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "prepackage": "npm run compile",
+    "package": "npx @vscode/vsce package --allow-missing-repository",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.3.0"
+  }
+}
