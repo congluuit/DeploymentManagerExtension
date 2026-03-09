@@ -1,4 +1,4 @@
-import { VercelProject, VercelDeployment } from '../utils/types';
+import { VercelProject, VercelDeployment, VercelDeploymentEvent } from '../utils/types';
 /**
  * Vercel REST API client.
  * Handles authentication and all project/deployment operations.
@@ -39,10 +39,16 @@ export declare class VercelClient {
         withLatestCommit?: boolean;
         target?: 'production' | 'staging' | string;
     }): Promise<VercelDeployment>;
-    /** Redeploy an existing Vercel project by cloning its latest deployment. */
+    /** Redeploy an existing Vercel project by cloning its latest eligible deployment. */
     redeployProject(projectId: string, name: string): Promise<VercelDeployment>;
     /** Get deployment details. */
     getDeployment(deploymentId: string): Promise<VercelDeployment>;
+    /** Get deployment events/log stream entries for status tracking and failure analysis. */
+    getDeploymentEvents(deploymentId: string, options?: {
+        limit?: number;
+        since?: number;
+        direction?: 'forward' | 'backward';
+    }): Promise<VercelDeploymentEvent[]>;
     /**
      * Import and upsert environment variables for a project.
      * Uses Vercel's upsert mode so existing keys are replaced.

@@ -1,4 +1,4 @@
-import { ProviderName } from '../providers/providerTypes';
+import { ProviderName, ProviderStatusUpdate } from '../providers/providerTypes';
 export interface RedeployTarget {
     provider: ProviderName;
     id: string;
@@ -8,6 +8,7 @@ export interface RedeployOptions {
     target?: RedeployTarget;
     notify?: boolean;
     refreshDashboard?: boolean;
+    onStatus?: (update: ProviderStatusUpdate) => void;
 }
 export interface RedeployResult {
     success: boolean;

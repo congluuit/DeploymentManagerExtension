@@ -44,18 +44,40 @@ export interface VercelProject {
     latestDeployments?: VercelDeployment[];
 }
 /** Vercel deployment as returned by the API. */
+export interface VercelDeploymentCreator {
+    uid?: string;
+    username?: string;
+    email?: string;
+    githubLogin?: string;
+}
 export interface VercelDeployment {
     id?: string;
     uid: string;
     name: string;
-    url: string;
-    state: 'BUILDING' | 'ERROR' | 'INITIALIZING' | 'QUEUED' | 'READY' | 'CANCELED';
-    created: number;
-    createdAt: number;
+    url?: string;
+    state?: string;
+    readyState?: string;
+    readySubstate?: string;
+    readyStateReason?: string;
+    errorCode?: string;
+    errorMessage?: string;
+    created?: number;
+    createdAt?: number;
     buildingAt?: number;
     ready?: number;
     source?: string;
     meta?: Record<string, string>;
+    creator?: VercelDeploymentCreator;
+    isInConcurrentBuildsQueue?: boolean;
+    isInSystemBuildsQueue?: boolean;
+}
+/** Vercel deployment event as returned by the API. */
+export interface VercelDeploymentEvent {
+    createdAt?: number;
+    type?: string;
+    payload?: unknown;
+    info?: unknown;
+    [key: string]: unknown;
 }
 /** Coolify application as returned by the API. */
 export interface CoolifyApplication {

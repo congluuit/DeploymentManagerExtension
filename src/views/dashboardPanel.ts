@@ -6,6 +6,7 @@ import { CoolifyClient } from '../clients/coolifyClient';
 import { GitHubClient } from '../clients/githubClient';
 import { NetlifyClient } from '../clients/netlifyClient';
 import { VercelClient } from '../clients/vercelClient';
+import { redeployProject } from '../commands/redeployProject';
 import { ProjectDetector } from '../services/projectDetector';
 import { SecretStorageManager } from '../utils/secretStorage';
 import {
@@ -63,15 +64,23 @@ interface DashboardWebviewMessage {
     | 'visitResourceSite'
     | 'importResourceEnv'
     | 'openLogs'
-    | 'redeployResult';
+    | 'redeployResult'
+    | 'redeployProgress';
     requestId?: string;
     provider?: string;
     projectId?: string;
     projectName?: string;
+    resourceKey?: string;
     siteUrl?: string;
     success?: boolean;
     imported?: number;
     error?: string;
+    phase?: string;
+    state?: string;
+    messageText?: string;
+    sourceLabel?: string;
+    uploaded?: number;
+    total?: number;
     sectionBodyHtml?: string;
     providerSectionHtml?: string;
     latestCommitLabel?: string;
@@ -83,7 +92,8 @@ interface ManagedResourceItem {
     projectId: string;
     projectName: string;
     detailLabel: string;
-    deploymentStatus: 'ready' | 'not-ready';
+    statusDetailLabel?: string;
+    deploymentStatus: 'ready' | 'not-ready' | 'error';
     deploymentStatusLabel: string;
     siteUrl: string | null;
 }
@@ -256,22 +266,37 @@ export class DashboardPanel {
                 }
 
                 try {
-                    const result = await vscode.commands.executeCommand<{ success: boolean; error?: string }>(
-                        'deploymentManager.redeployProject',
-                        {
-                            target: {
-                                provider: message.provider,
-                                id: message.projectId,
-                                name: message.projectName,
-                            },
-                            notify: false,
-                            refresh: false,
-                        }
-                    );
+                    const providerName = this.isProviderName(message.provider) ? message.provider : null;
+                    if (!providerName) {
+                        throw new Error('Unsupported provider for redeploy.');
+                    }
+                    const result = await redeployProject(this.runRefresh, {
+                        target: {
+                            provider: providerName,
+                            id: message.projectId,
+                            name: message.projectName,
+                        },
+                        notify: false,
+                        refreshDashboard: false,
+                        onStatus: (update) => {
+                            this.panel.webview.postMessage({
+                                command: 'redeployProgress',
+                                requestId: message.requestId,
+                                resourceKey: message.resourceKey,
+                                phase: update.phase,
+                                state: update.state,
+                                messageText: update.message,
+                                sourceLabel: update.sourceLabel,
+                                uploaded: update.fileProgress?.uploaded,
+                                total: update.fileProgress?.total,
+                            });
+                        },
+                    });
 
                     this.panel.webview.postMessage({
                         command: 'redeployResult',
                         requestId: message.requestId,
+                        resourceKey: message.resourceKey,
                         success: result?.success === true,
                         error: result?.error,
                     });
@@ -280,6 +305,7 @@ export class DashboardPanel {
                     this.panel.webview.postMessage({
                         command: 'redeployResult',
                         requestId: message.requestId,
+                        resourceKey: message.resourceKey,
                         success: false,
                         error: text,
                     });
@@ -650,7 +676,7 @@ export class DashboardPanel {
                 projectId,
                 projectName,
                 title: deployment.uid.substring(0, 10),
-                state: deployment.state,
+                state: this.getVercelState(deployment),
                 timestamp,
                 timestampLabel: DashboardPanel.formatTimestamp(timestamp),
             };
@@ -735,11 +761,12 @@ export class DashboardPanel {
         const vercelLimit = vercelProjects.slice(0, 10);
         for (const project of vercelLimit) {
             const latestDeployment = await this.getLatestVercelDeployment(vercel, project.id);
-            const rawState = latestDeployment?.state ?? 'unknown';
+            const rawState = this.getVercelState(latestDeployment);
             const status = this.toManagedStatus('Vercel', rawState);
             const siteUrl = latestDeployment?.url
                 ? this.normalizePublicUrl(`https://${latestDeployment.url}`)
                 : null;
+            const statusDetailLabel = this.buildVercelStatusDetail(latestDeployment);
 
             resources.push({
                 key: `vercel-${project.id}`,
@@ -747,8 +774,9 @@ export class DashboardPanel {
                 projectId: project.id,
                 projectName: project.name,
                 detailLabel: project.framework ?? 'framework n/a',
+                statusDetailLabel,
                 deploymentStatus: status,
-                deploymentStatusLabel: status === 'ready' ? 'Ready' : 'Not Ready',
+                deploymentStatusLabel: this.toManagedStatusLabel('Vercel', rawState, status),
                 siteUrl,
             });
         }
@@ -758,6 +786,9 @@ export class DashboardPanel {
             const rawState = app.status || 'unknown';
             const status = this.toManagedStatus('Coolify', rawState);
             const siteUrl = this.normalizePublicUrl(app.fqdn);
+            const statusDetailLabel = app.updated_at
+                ? `Updated ${DashboardPanel.formatRelativeTime(app.updated_at)}`
+                : undefined;
 
             resources.push({
                 key: `coolify-${app.uuid}`,
@@ -765,8 +796,9 @@ export class DashboardPanel {
                 projectId: app.uuid,
                 projectName: app.name,
                 detailLabel: app.status || 'status n/a',
+                statusDetailLabel,
                 deploymentStatus: status,
-                deploymentStatusLabel: status === 'ready' ? 'Ready' : 'Not Ready',
+                deploymentStatusLabel: this.toManagedStatusLabel('Coolify', rawState, status),
                 siteUrl,
             });
         }
@@ -785,6 +817,10 @@ export class DashboardPanel {
                 latestDeploy?.deploy_url ||
                 latestDeploy?.url
             );
+            const netlifyTimestamp = latestDeploy?.updated_at || latestDeploy?.published_at || latestDeploy?.created_at;
+            const statusDetailLabel = netlifyTimestamp
+                ? `Updated ${DashboardPanel.formatRelativeTime(netlifyTimestamp)}`
+                : undefined;
 
             resources.push({
                 key: `netlify-${site.id}`,
@@ -792,8 +828,9 @@ export class DashboardPanel {
                 projectId: site.id,
                 projectName: site.name,
                 detailLabel: rawState || 'state n/a',
+                statusDetailLabel,
                 deploymentStatus: status,
-                deploymentStatusLabel: status === 'ready' ? 'Ready' : 'Not Ready',
+                deploymentStatusLabel: this.toManagedStatusLabel('Netlify', rawState, status),
                 siteUrl,
             });
         }
@@ -805,16 +842,116 @@ export class DashboardPanel {
         const value = rawState.toLowerCase();
 
         if (provider === 'Vercel') {
-            return value === 'ready' ? 'ready' : 'not-ready';
+            if (value === 'ready') {
+                return 'ready';
+            }
+            if (value === 'error' || value === 'canceled') {
+                return 'error';
+            }
+            return 'not-ready';
         }
 
         if (provider === 'Coolify') {
-            return ['running', 'ready', 'healthy', 'active', 'started', 'up'].includes(value)
-                ? 'ready'
-                : 'not-ready';
+            if (['running', 'ready', 'healthy', 'active', 'started', 'up'].includes(value)) {
+                return 'ready';
+            }
+            if (['failed', 'error', 'errored', 'crashed', 'dead', 'unhealthy', 'stopped', 'exited'].includes(value)) {
+                return 'error';
+            }
+            return 'not-ready';
         }
 
-        return ['ready', 'processed'].includes(value) ? 'ready' : 'not-ready';
+        if (['ready', 'processed'].includes(value)) {
+            return 'ready';
+        }
+        if (['error', 'rejected'].includes(value)) {
+            return 'error';
+        }
+        return 'not-ready';
+    }
+
+    private toManagedStatusLabel(
+        provider: ProviderName,
+        rawState: string,
+        status: ManagedResourceItem['deploymentStatus']
+    ): string {
+        const value = rawState.toLowerCase();
+
+        if (provider === 'Vercel') {
+            if (value === 'ready') {
+                return 'Ready';
+            }
+            if (value === 'queued') {
+                return 'Queued';
+            }
+            if (value === 'initializing') {
+                return 'Uploading';
+            }
+            if (value === 'building') {
+                return 'Deploying';
+            }
+            if (value === 'error') {
+                return 'Failed';
+            }
+            if (value === 'canceled') {
+                return 'Canceled';
+            }
+            return 'Processing';
+        }
+
+        if (status === 'ready') {
+            return 'Ready';
+        }
+
+        if (status === 'error') {
+            return 'Failed';
+        }
+
+        return DashboardPanel.toTitleCase(rawState || 'not ready');
+    }
+
+    private getVercelState(deployment: VercelDeployment | null): string {
+        const raw = deployment?.state ?? deployment?.readyState ?? 'unknown';
+        return String(raw).toLowerCase();
+    }
+
+    private buildVercelStatusDetail(deployment: VercelDeployment | null): string | undefined {
+        if (!deployment) {
+            return undefined;
+        }
+
+        const parts: string[] = [];
+        const updatedAt = deployment.ready ?? deployment.createdAt ?? deployment.created;
+        if (typeof updatedAt === 'number' && updatedAt > 0) {
+            parts.push(`Updated ${DashboardPanel.formatRelativeTime(updatedAt)}`);
+        }
+
+        const source = this.extractVercelSource(deployment);
+        if (source) {
+            parts.push(`From ${source}`);
+        }
+
+        return parts.length > 0 ? parts.join(' • ') : undefined;
+    }
+
+    private extractVercelSource(deployment: VercelDeployment): string | null {
+        const creator = deployment.creator;
+        const meta = deployment.meta ?? {};
+        const candidates: Array<string | undefined> = [
+            creator?.githubLogin,
+            creator?.username,
+            meta.githubCommitAuthorLogin,
+            meta.githubCommitAuthorName,
+            creator?.email,
+        ];
+
+        for (const candidate of candidates) {
+            if (typeof candidate === 'string' && candidate.trim().length > 0) {
+                return candidate.trim();
+            }
+        }
+
+        return null;
     }
 
     private normalizePublicUrl(value: string | null | undefined): string | null {
@@ -905,7 +1042,27 @@ export class DashboardPanel {
 
         try {
             const deployments = await vercel.listDeployments(projectId, 1);
-            return deployments[0] ?? null;
+            const latest = deployments[0] ?? null;
+            if (!latest) {
+                return null;
+            }
+
+            const deploymentId = latest.uid || latest.id;
+            if (!deploymentId) {
+                return latest;
+            }
+
+            try {
+                const detailed = await vercel.getDeployment(deploymentId);
+                return {
+                    ...latest,
+                    ...detailed,
+                    uid: detailed.uid || latest.uid,
+                    name: detailed.name || latest.name,
+                };
+            } catch {
+                return latest;
+            }
         } catch {
             return null;
         }
@@ -975,7 +1132,9 @@ export class DashboardPanel {
         const stateClass =
             item.deploymentStatus === 'ready'
                 ? 'git-pill-ok'
-                : 'git-pill-warning';
+                : item.deploymentStatus === 'error'
+                    ? 'git-pill-error'
+                    : 'git-pill-warning';
 
         const visitAttrs = item.siteUrl
             ? `data-site-url="${DashboardPanel.escapeHtml(item.siteUrl)}"`
@@ -986,7 +1145,10 @@ export class DashboardPanel {
                 <div class="resource-meta">
                     <strong class="resource-title">${DashboardPanel.escapeHtml(item.projectName)}</strong>
                     <small class="resource-subtitle">${DashboardPanel.escapeHtml(item.detailLabel)}</small>
-                    <span class="git-pill ${stateClass}" id="git-status-${index}">${DashboardPanel.escapeHtml(item.deploymentStatusLabel)}</span>
+                    ${item.statusDetailLabel
+                        ? `<small id="resource-status-detail-${DashboardPanel.escapeHtml(item.key)}" class="resource-subtitle">${DashboardPanel.escapeHtml(item.statusDetailLabel)}</small>`
+                        : `<small id="resource-status-detail-${DashboardPanel.escapeHtml(item.key)}" class="resource-subtitle"></small>`}
+                    <span class="git-pill ${stateClass}" id="resource-pill-${DashboardPanel.escapeHtml(item.key)}">${DashboardPanel.escapeHtml(item.deploymentStatusLabel)}</span>
                 </div>
                 <div class="resource-actions">
                     <button
@@ -1638,6 +1800,12 @@ export class DashboardPanel {
                         border-color: rgba(255, 184, 95, 0.38);
                     }
 
+                    .git-pill-error {
+                        color: #ffb0b0;
+                        background: rgba(209, 66, 66, 0.2);
+                        border-color: rgba(255, 118, 118, 0.42);
+                    }
+
                     .resource-actions .ghost-btn[disabled] {
                         cursor: not-allowed;
                         opacity: 0.7;
@@ -1803,9 +1971,86 @@ export class DashboardPanel {
                         });
                     }
 
+                    function setResourcePill(resourceKey, label, tone) {
+                        if (!resourceKey) {
+                            return;
+                        }
+                        const pill = document.getElementById('resource-pill-' + resourceKey);
+                        if (!pill) {
+                            return;
+                        }
+                        pill.textContent = label;
+                        pill.classList.remove('git-pill-ok', 'git-pill-warning', 'git-pill-error');
+                        if (tone === 'ok') {
+                            pill.classList.add('git-pill-ok');
+                            return;
+                        }
+                        if (tone === 'error') {
+                            pill.classList.add('git-pill-error');
+                            return;
+                        }
+                        pill.classList.add('git-pill-warning');
+                    }
+
+                    function setResourceDetail(resourceKey, detail) {
+                        if (!resourceKey) {
+                            return;
+                        }
+                        const node = document.getElementById('resource-status-detail-' + resourceKey);
+                        if (!node) {
+                            return;
+                        }
+                        node.textContent = detail || '';
+                    }
+
+                    function applyRedeployProgress(message) {
+                        const resourceKey = message.resourceKey || '';
+                        if (!resourceKey) {
+                            return;
+                        }
+                        const statusNode = document.getElementById('redeploy-status-' + resourceKey);
+                        if (statusNode) {
+                            statusNode.classList.remove('ok', 'error');
+                            const source = message.sourceLabel ? ' • ' + message.sourceLabel : '';
+                            statusNode.textContent = (message.messageText || 'In progress...') + source;
+                        }
+
+                        const phase = String(message.phase || '').toLowerCase();
+                        const state = String(message.state || '').toLowerCase();
+                        if (phase === 'ready' || state === 'ready') {
+                            setResourcePill(resourceKey, 'Ready', 'ok');
+                            setResourceDetail(resourceKey, 'Updated just now' + (message.sourceLabel ? ' • ' + message.sourceLabel : ''));
+                            return;
+                        }
+                        if (phase === 'failed' || state === 'error' || state === 'canceled') {
+                            setResourcePill(resourceKey, state === 'canceled' ? 'Canceled' : 'Failed', 'error');
+                            return;
+                        }
+                        if (phase === 'uploading') {
+                            setResourcePill(resourceKey, 'Uploading', 'warning');
+                            return;
+                        }
+                        if (phase === 'queued' || state === 'queued') {
+                            setResourcePill(resourceKey, 'Queued', 'warning');
+                            return;
+                        }
+                        if (phase === 'deploying' || state === 'building' || state === 'initializing') {
+                            setResourcePill(resourceKey, 'Deploying', 'warning');
+                        }
+                    }
+
                     window.addEventListener('message', (event) => {
                         const message = event.data;
-                        if (!message || !message.requestId) {
+                        if (!message) {
+                            return;
+                        }
+
+                        if (message.command === 'redeployProgress') {
+                            applyRedeployProgress(message);
+                            return;
+                        }
+
+                        if (!message.requestId) {
                             return;
                         }
 
@@ -2054,7 +2299,7 @@ export class DashboardPanel {
 
                                 const result = await sendWithReply(
                                     'redeployResource',
-                                    { provider, projectId, projectName },
+                                    { provider, projectId, projectName, resourceKey },
                                     'redeployResult'
                                 );
 
@@ -2066,10 +2311,16 @@ export class DashboardPanel {
                                         statusNode.classList.remove('error');
                                         statusNode.classList.add('ok');
                                         statusNode.textContent = 'Success';
+                                        setResourcePill(resourceKey, 'Ready', 'ok');
+                                        const detailNode = document.getElementById('resource-status-detail-' + resourceKey);
+                                        if (detailNode && detailNode.textContent.trim().length === 0) {
+                                            detailNode.textContent = 'Updated just now';
+                                        }
                                     } else {
                                         statusNode.classList.remove('ok');
                                         statusNode.classList.add('error');
                                         statusNode.textContent = 'Failed: ' + (result.error || 'Unknown error');
+                                        setResourcePill(resourceKey, 'Failed', 'error');
                                     }
                                 }
                             });
@@ -2217,6 +2468,42 @@ export class DashboardPanel {
 
     private static formatTimestamp(value: string | number | undefined): string {
         return new Date(DashboardPanel.normalizeTimestamp(value)).toLocaleString();
+    }
+
+    private static formatRelativeTime(value: string | number): string {
+        const timestamp = DashboardPanel.normalizeTimestamp(value);
+        const diffMs = Date.now() - timestamp;
+        const absMs = Math.abs(diffMs);
+
+        const minute = 60_000;
+        const hour = 60 * minute;
+        const day = 24 * hour;
+
+        if (absMs < minute) {
+            return 'just now';
+        }
+
+        if (absMs < hour) {
+            const amount = Math.floor(absMs / minute);
+            return `${amount} min${amount === 1 ? '' : 's'} ago`;
+        }
+
+        if (absMs < day) {
+            const amount = Math.floor(absMs / hour);
+            return `${amount} hour${amount === 1 ? '' : 's'} ago`;
+        }
+
+        const amount = Math.floor(absMs / day);
+        return `${amount} day${amount === 1 ? '' : 's'} ago`;
+    }
+
+    private static toTitleCase(value: string): string {
+        return value
+            .replace(/[_-]+/g, ' ')
+            .split(/\s+/)
+            .filter((part) => part.length > 0)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+            .join(' ');
     }
 
     private static escapeHtml(text: string): string {

@@ -51,6 +51,7 @@ const PROVIDER_CONNECTION_KEYS = {
 async function redeployProject(dashboardRefresh, options) {
     const notify = options?.notify ?? true;
     const refreshDashboard = options?.refreshDashboard ?? false;
+    const onStatus = options?.onStatus;
     const detector = new projectDetector_1.ProjectDetector();
     const projectInfo = options?.target ? null : await detector.detect();
     if (!projectInfo && !options?.target) {
@@ -125,7 +126,17 @@ async function redeployProject(dashboardRefresh, options) {
     }, async (progress) => {
         try {
             const adapter = (0, providers_1.getProvider)(target.provider);
-            const result = await adapter.redeploy({ id: target.id, name: target.name }, { progress });
+            onStatus?.({
+                phase: 'info',
+                message: `Starting redeploy on ${target.provider}...`,
+                timestamp: Date.now(),
+            });
+            const result = await adapter.redeploy({ id: target.id, name: target.name }, { progress, onStatus });
+            onStatus?.({
+                phase: 'ready',
+                message: `Redeploy finished on ${target.provider}.`,
+                timestamp: Date.now(),
+            });
             if (notify) {
                 const urlSuffix = result.deploymentUrl ? ` URL: ${result.deploymentUrl}` : '';
                 vscode.window.showInformationMessage(`Redeployment succeeded for "${target.name}" on ${target.provider}.${urlSuffix}`);
@@ -137,6 +148,11 @@ async function redeployProject(dashboardRefresh, options) {
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             runError = message;
+            onStatus?.({
+                phase: 'failed',
+                message,
+                timestamp: Date.now(),
+            });
             if (notify) {
                 vscode.window.showErrorMessage(`Redeployment failed: ${message}`);
             }

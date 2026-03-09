@@ -1,5 +1,10 @@
 import { SecretStorageManager } from '../utils/secretStorage';
-import { StorageKeys, VercelProject, VercelDeployment } from '../utils/types';
+import {
+    StorageKeys,
+    VercelProject,
+    VercelDeployment,
+    VercelDeploymentEvent,
+} from '../utils/types';
 
 const VERCEL_API_BASE = 'https://api.vercel.com';
 
@@ -134,29 +139,88 @@ export class VercelClient {
         return this.request<VercelDeployment>('POST', '/v13/deployments', body);
     }
 
-    /** Redeploy an existing Vercel project by cloning its latest deployment. */
+    /** Redeploy an existing Vercel project by cloning its latest eligible deployment. */
     async redeployProject(projectId: string, name: string): Promise<VercelDeployment> {
-        const deployments = await this.listDeployments(projectId, 1);
+        const deployments = await this.listDeployments(projectId, 10);
         if (deployments.length === 0) {
             throw new Error(`No previous deployments found for project "${name}".`);
         }
 
-        const latest = deployments[0] as VercelDeployment & { id?: string };
-        const deploymentId = latest.uid || latest.id;
-        if (!deploymentId) {
-            throw new Error(`Unable to determine latest deployment ID for project "${name}".`);
+        let sawNeverDeployable = false;
+
+        for (const deployment of deployments as Array<VercelDeployment & { id?: string }>) {
+            const deploymentId = deployment.uid || deployment.id;
+            if (!deploymentId) {
+                continue;
+            }
+
+            try {
+                return await this.createDeployment(name, {
+                    project: projectId,
+                    deploymentId,
+                    withLatestCommit: true,
+                });
+            } catch (error) {
+                const text = error instanceof Error ? error.message : String(error);
+                if (/deployment_can_never_deploy/i.test(text)) {
+                    sawNeverDeployable = true;
+                    continue;
+                }
+                throw error;
+            }
         }
 
-        return this.createDeployment(name, {
-            project: projectId,
-            deploymentId,
-            withLatestCommit: true,
-        });
+        if (sawNeverDeployable) {
+            throw new Error(
+                `Vercel cannot redeploy previous deployments for "${name}" (deployment_can_never_deploy). ` +
+                `Push a new commit and deploy from that commit.`
+            );
+        }
+
+        throw new Error(`Unable to determine a deployable previous deployment for project "${name}".`);
     }
 
     /** Get deployment details. */
     async getDeployment(deploymentId: string): Promise<VercelDeployment> {
         return this.request<VercelDeployment>('GET', `/v13/deployments/${encodeURIComponent(deploymentId)}`);
+    }
+
+    /** Get deployment events/log stream entries for status tracking and failure analysis. */
+    async getDeploymentEvents(
+        deploymentId: string,
+        options?: { limit?: number; since?: number; direction?: 'forward' | 'backward' }
+    ): Promise<VercelDeploymentEvent[]> {
+        const query = new URLSearchParams();
+        if (typeof options?.limit === 'number' && options.limit > 0) {
+            query.set('limit', String(options.limit));
+        }
+        if (typeof options?.since === 'number' && options.since > 0) {
+            query.set('since', String(options.since));
+        }
+        if (options?.direction) {
+            query.set('direction', options.direction);
+        }
+        query.set('builds', '1');
+        query.set('follow', '0');
+
+        const suffix = query.toString();
+        const response = await this.request<unknown>(
+            'GET',
+            `/v3/deployments/${encodeURIComponent(deploymentId)}/events${suffix ? `?${suffix}` : ''}`
+        );
+
+        if (Array.isArray(response)) {
+            return response as VercelDeploymentEvent[];
+        }
+
+        if (response && typeof response === 'object') {
+            const events = (response as { events?: unknown }).events;
+            if (Array.isArray(events)) {
+                return events as VercelDeploymentEvent[];
+            }
+        }
+
+        return [];
     }
 
     /**

@@ -26,6 +26,10 @@ export declare class DashboardPanel {
     private normalizeState;
     private buildManagedResources;
     private toManagedStatus;
+    private toManagedStatusLabel;
+    private getVercelState;
+    private buildVercelStatusDetail;
+    private extractVercelSource;
     private normalizePublicUrl;
     private matchesWorkspaceOnVercel;
     private matchesWorkspaceOnCoolify;
@@ -44,6 +48,8 @@ export declare class DashboardPanel {
     private dispose;
     private static normalizeTimestamp;
     private static formatTimestamp;
+    private static formatRelativeTime;
+    private static toTitleCase;
     private static escapeHtml;
     private static getNonce;
 }

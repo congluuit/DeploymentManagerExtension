@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ProjectDetector } from '../services/projectDetector';
 import { getProvider } from '../providers';
-import { ProviderName } from '../providers/providerTypes';
+import { ProviderName, ProviderStatusUpdate } from '../providers/providerTypes';
 import { SecretStorageManager } from '../utils/secretStorage';
 import { StorageKeys } from '../utils/types';
 
@@ -21,6 +21,7 @@ export interface RedeployOptions {
     target?: RedeployTarget;
     notify?: boolean;
     refreshDashboard?: boolean;
+    onStatus?: (update: ProviderStatusUpdate) => void;
 }
 
 export interface RedeployResult {
@@ -38,6 +39,7 @@ export async function redeployProject(
 ): Promise<RedeployResult> {
     const notify = options?.notify ?? true;
     const refreshDashboard = options?.refreshDashboard ?? false;
+    const onStatus = options?.onStatus;
 
     const detector = new ProjectDetector();
     const projectInfo = options?.target ? null : await detector.detect();
@@ -131,7 +133,20 @@ export async function redeployProject(
         async (progress) => {
             try {
                 const adapter = getProvider(target.provider);
-                const result = await adapter.redeploy({ id: target.id, name: target.name }, { progress });
+                onStatus?.({
+                    phase: 'info',
+                    message: `Starting redeploy on ${target.provider}...`,
+                    timestamp: Date.now(),
+                });
+                const result = await adapter.redeploy(
+                    { id: target.id, name: target.name },
+                    { progress, onStatus }
+                );
+                onStatus?.({
+                    phase: 'ready',
+                    message: `Redeploy finished on ${target.provider}.`,
+                    timestamp: Date.now(),
+                });
 
                 if (notify) {
                     const urlSuffix = result.deploymentUrl ? ` URL: ${result.deploymentUrl}` : '';
@@ -146,6 +161,11 @@ export async function redeployProject(
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 runError = message;
+                onStatus?.({
+                    phase: 'failed',
+                    message,
+                    timestamp: Date.now(),
+                });
                 if (notify) {
                     vscode.window.showErrorMessage(`Redeployment failed: ${message}`);
                 }
