@@ -169,19 +169,15 @@ export class DashboardPanel {
                 return;
             case 'connectVercel':
                 await vscode.commands.executeCommand('deploymentManager.connectVercel');
-                await this.runRefresh();
                 return;
             case 'connectCoolify':
                 await vscode.commands.executeCommand('deploymentManager.connectCoolify');
-                await this.runRefresh();
                 return;
             case 'connectNetlify':
                 await vscode.commands.executeCommand('deploymentManager.connectNetlify');
-                await this.runRefresh();
                 return;
             case 'deployProject':
                 await vscode.commands.executeCommand('deploymentManager.deployProject');
-                await this.runRefresh();
                 return;
             case 'redeployProject':
                 if (message.requestId) {
@@ -940,7 +936,7 @@ export class DashboardPanel {
             ? '<div class="empty-block">Connect Vercel, Coolify, or Netlify to unlock deployment actions.</div>'
             : `
                 <div class="action-grid">
-                    <button id="btn-refresh" class="accent-btn" type="button">Refresh Data</button>
+                    <button id="btn-refresh" class="accent-btn" type="button">Refresh Dashboard</button>
                     ${existsRemotely
                 ? `
                         <button id="btn-redeploy" class="primary-btn" type="button">Redeploy Project</button>

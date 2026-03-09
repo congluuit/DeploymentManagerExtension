@@ -64,7 +64,7 @@
       },
       {
         "command": "deploymentManager.refreshProjects",
-        "title": "Deployment Manager: Refresh Projects",
+        "title": "Deployment Manager: Refresh Dashboard",
         "icon": "$(refresh)"
       },
       {

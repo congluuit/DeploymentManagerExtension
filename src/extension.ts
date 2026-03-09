@@ -66,34 +66,25 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('deploymentManager.connectVercel', async () => {
-            const success = await connectVercel();
-            if (success) {
-                await doRefresh();
-            }
+            await connectVercel();
         })
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('deploymentManager.connectCoolify', async () => {
-            const success = await connectCoolify();
-            if (success) {
-                await doRefresh();
-            }
+            await connectCoolify();
         })
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('deploymentManager.connectNetlify', async () => {
-            const success = await connectNetlify();
-            if (success) {
-                await doRefresh();
-            }
+            await connectNetlify();
         })
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('deploymentManager.deployProject', async () => {
-            await deployProject(doRefresh);
+            await deployProject();
         })
     );
 

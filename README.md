@@ -77,7 +77,7 @@ npx @vscode/vsce package --allow-missing-repository
 - `Deployment Manager: Connect Netlify`
 - `Deployment Manager: Deploy Project`
 - `Deployment Manager: Redeploy Project`
-- `Deployment Manager: Refresh Projects`
+- `Deployment Manager: Refresh Dashboard`
 - `Deployment Manager: Open Deployment Logs`
 
 ## Project Structure

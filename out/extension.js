@@ -86,25 +86,16 @@ function activate(context) {
         await doRefresh();
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.connectVercel', async () => {
-        const success = await (0, connectProvider_1.connectVercel)();
-        if (success) {
-            await doRefresh();
-        }
+        await (0, connectProvider_1.connectVercel)();
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.connectCoolify', async () => {
-        const success = await (0, connectProvider_1.connectCoolify)();
-        if (success) {
-            await doRefresh();
-        }
+        await (0, connectProvider_1.connectCoolify)();
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.connectNetlify', async () => {
-        const success = await (0, connectProvider_1.connectNetlify)();
-        if (success) {
-            await doRefresh();
-        }
+        await (0, connectProvider_1.connectNetlify)();
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.deployProject', async () => {
-        await (0, deployProject_1.deployProject)(doRefresh);
+        await (0, deployProject_1.deployProject)();
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.redeployProject', async (payload) => {
         const target = payload?.target;

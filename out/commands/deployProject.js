@@ -48,7 +48,7 @@ const PROVIDER_CONNECTION_KEYS = {
  * Deploy a project that does not yet exist remotely.
  * Enforces the "deploy only if new" rule.
  */
-async function deployProject(dashboardRefresh) {
+async function deployProject() {
     const detector = new projectDetector_1.ProjectDetector();
     const projectInfo = await detector.detect();
     if (!projectInfo) {
@@ -99,7 +99,6 @@ async function deployProject(dashboardRefresh) {
             const adapter = (0, providers_1.getProvider)(provider);
             await adapter.createProject(projectInfo);
             vscode.window.showInformationMessage(`Project "${projectInfo.name}" created on ${provider}.`);
-            dashboardRefresh();
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);

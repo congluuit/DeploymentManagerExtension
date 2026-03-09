@@ -50,7 +50,7 @@ const PROVIDER_CONNECTION_KEYS = {
  */
 async function redeployProject(dashboardRefresh, options) {
     const notify = options?.notify ?? true;
-    const refreshDashboard = options?.refreshDashboard ?? true;
+    const refreshDashboard = options?.refreshDashboard ?? false;
     const detector = new projectDetector_1.ProjectDetector();
     const projectInfo = options?.target ? null : await detector.detect();
     if (!projectInfo && !options?.target) {
