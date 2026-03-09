@@ -88,8 +88,21 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('deploymentManager.redeployProject', async () => {
-            await redeployProject(doRefresh);
+        vscode.commands.registerCommand('deploymentManager.redeployProject', async (payload?: { target?: { provider?: string; id?: string; name?: string }; notify?: boolean }) => {
+            const target = payload?.target;
+            const provider: 'Vercel' | 'Coolify' | undefined =
+                target?.provider === 'Vercel' || target?.provider === 'Coolify'
+                    ? target.provider
+                    : undefined;
+            const parsedTarget =
+                provider &&
+                    typeof target?.id === 'string' &&
+                    target.id.length > 0 &&
+                    typeof target?.name === 'string' &&
+                    target.name.length > 0
+                    ? { provider, id: target.id, name: target.name }
+                    : undefined;
+            return redeployProject(doRefresh, { target: parsedTarget, notify: payload?.notify });
         })
     );
 

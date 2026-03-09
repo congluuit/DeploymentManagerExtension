@@ -107,13 +107,51 @@ export class VercelClient {
     /** Create a new deployment. */
     async createDeployment(
         name: string,
-        gitSource?: { type: string; ref: string; repoId: string | number }
+        options?: {
+            gitSource?: { type: string; ref: string; repoId: string | number };
+            project?: string;
+            deploymentId?: string;
+            withLatestCommit?: boolean;
+            target?: 'production' | 'staging' | string;
+        }
     ): Promise<VercelDeployment> {
         const body: Record<string, unknown> = { name };
-        if (gitSource) {
-            body.gitSource = gitSource;
+        if (options?.gitSource) {
+            body.gitSource = options.gitSource;
+        }
+        if (options?.project) {
+            body.project = options.project;
+        }
+        if (options?.deploymentId) {
+            body.deploymentId = options.deploymentId;
+        }
+        if (typeof options?.withLatestCommit === 'boolean') {
+            body.withLatestCommit = options.withLatestCommit;
+        }
+        if (options?.target) {
+            body.target = options.target;
         }
         return this.request<VercelDeployment>('POST', '/v13/deployments', body);
+    }
+
+    /** Redeploy an existing Vercel project by cloning its latest deployment. */
+    async redeployProject(projectId: string, name: string): Promise<VercelDeployment> {
+        const deployments = await this.listDeployments(projectId, 1);
+        if (deployments.length === 0) {
+            throw new Error(`No previous deployments found for project "${name}".`);
+        }
+
+        const latest = deployments[0] as VercelDeployment & { id?: string };
+        const deploymentId = latest.uid || latest.id;
+        if (!deploymentId) {
+            throw new Error(`Unable to determine latest deployment ID for project "${name}".`);
+        }
+
+        return this.createDeployment(name, {
+            project: projectId,
+            deploymentId,
+            withLatestCommit: true,
+        });
     }
 
     /** Get deployment details. */

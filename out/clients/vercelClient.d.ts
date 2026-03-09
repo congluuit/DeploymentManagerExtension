@@ -28,11 +28,19 @@ export declare class VercelClient {
     /** List deployments for a project. */
     listDeployments(projectId: string, limit?: number): Promise<VercelDeployment[]>;
     /** Create a new deployment. */
-    createDeployment(name: string, gitSource?: {
-        type: string;
-        ref: string;
-        repoId: string | number;
+    createDeployment(name: string, options?: {
+        gitSource?: {
+            type: string;
+            ref: string;
+            repoId: string | number;
+        };
+        project?: string;
+        deploymentId?: string;
+        withLatestCommit?: boolean;
+        target?: 'production' | 'staging' | string;
     }): Promise<VercelDeployment>;
+    /** Redeploy an existing Vercel project by cloning its latest deployment. */
+    redeployProject(projectId: string, name: string): Promise<VercelDeployment>;
     /** Get deployment details. */
     getDeployment(deploymentId: string): Promise<VercelDeployment>;
     /**

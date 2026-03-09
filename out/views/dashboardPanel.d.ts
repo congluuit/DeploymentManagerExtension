@@ -18,6 +18,11 @@ export declare class DashboardPanel {
     private mapVercelDeployments;
     private buildStateCounts;
     private normalizeState;
+    private buildManagedResources;
+    private getLatestGitCommit;
+    private parseRepoIdentifier;
+    private getLatestVercelDeployment;
+    private extractCommitSha;
     private getDashboardHtml;
     private getLoadingHtml;
     private getErrorHtml;

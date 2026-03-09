@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.DashboardPanel = void 0;
 const vscode = __importStar(require("vscode"));
 const coolifyClient_1 = require("../clients/coolifyClient");
+const githubClient_1 = require("../clients/githubClient");
 const vercelClient_1 = require("../clients/vercelClient");
 const projectDetector_1 = require("../services/projectDetector");
 const secretStorage_1 = require("../utils/secretStorage");
@@ -78,6 +79,7 @@ class DashboardPanel {
     async handleMessage(message) {
         switch (message.command) {
             case 'refresh':
+            case 'checkGitUpdates':
                 await this.runRefresh();
                 return;
             case 'connectVercel':
@@ -96,6 +98,43 @@ class DashboardPanel {
                 await vscode.commands.executeCommand('deploymentManager.redeployProject');
                 await this.runRefresh();
                 return;
+            case 'redeployResource': {
+                if (!message.requestId || !message.provider || !message.projectId || !message.projectName) {
+                    this.panel.webview.postMessage({
+                        command: 'redeployResult',
+                        requestId: message.requestId,
+                        success: false,
+                        error: 'Missing redeploy target metadata.',
+                    });
+                    return;
+                }
+                try {
+                    const result = await vscode.commands.executeCommand('deploymentManager.redeployProject', {
+                        target: {
+                            provider: message.provider,
+                            id: message.projectId,
+                            name: message.projectName,
+                        },
+                        notify: false,
+                    });
+                    this.panel.webview.postMessage({
+                        command: 'redeployResult',
+                        requestId: message.requestId,
+                        success: result?.success === true,
+                        error: result?.error,
+                    });
+                }
+                catch (error) {
+                    const text = error instanceof Error ? error.message : String(error);
+                    this.panel.webview.postMessage({
+                        command: 'redeployResult',
+                        requestId: message.requestId,
+                        success: false,
+                        error: text,
+                    });
+                }
+                return;
+            }
             case 'openLogs':
                 if (message.provider && message.projectId) {
                     await vscode.commands.executeCommand('deploymentManager.openLogs', {
@@ -186,6 +225,7 @@ class DashboardPanel {
         activity.sort((a, b) => b.timestamp - a.timestamp);
         const trimmedActivity = activity.slice(0, 20);
         const stateCounts = this.buildStateCounts(trimmedActivity);
+        const managedResources = await this.buildManagedResources(vercelProjects, coolifyApps, vercelConnected);
         return {
             generatedAt: new Date().toLocaleString(),
             projectInfo,
@@ -197,6 +237,8 @@ class DashboardPanel {
             coolifyApps,
             activity: trimmedActivity,
             stateCounts,
+            managedResources,
+            gitStatusGeneratedAt: new Date().toLocaleString(),
         };
     }
     mapVercelDeployments(deployments, projectName, projectId) {
@@ -243,6 +285,132 @@ class DashboardPanel {
             return 'Canceled';
         }
         return 'Other';
+    }
+    async buildManagedResources(vercelProjects, coolifyApps, vercelConnected) {
+        const resources = [];
+        const github = new githubClient_1.GitHubClient();
+        const cache = new Map();
+        const vercel = vercelConnected ? new vercelClient_1.VercelClient() : null;
+        const vercelLimit = vercelProjects.slice(0, 10);
+        for (const project of vercelLimit) {
+            const parsed = this.parseRepoIdentifier(project.link?.repo);
+            let status = 'unknown';
+            let statusLabel = 'Unknown';
+            if (parsed) {
+                const branch = project.link?.productionBranch || 'main';
+                const latest = await this.getLatestGitCommit(github, cache, parsed.owner, parsed.repo, branch);
+                if (latest) {
+                    const latestDeployment = await this.getLatestVercelDeployment(vercel, project.id);
+                    const deploymentSha = this.extractCommitSha(latestDeployment?.meta);
+                    const deploymentTimestamp = latestDeployment
+                        ? DashboardPanel.normalizeTimestamp(latestDeployment.createdAt ?? latestDeployment.created)
+                        : 0;
+                    const hasNewUpdate = deploymentSha
+                        ? deploymentSha !== latest.sha
+                        : deploymentTimestamp > 0 && latest.date > deploymentTimestamp + 60000;
+                    status = hasNewUpdate ? 'new-update' : 'up-to-date';
+                    statusLabel = hasNewUpdate ? 'New update available' : 'Up to date';
+                }
+            }
+            resources.push({
+                key: `vercel-${project.id}`,
+                provider: 'Vercel',
+                projectId: project.id,
+                projectName: project.name,
+                detailLabel: project.framework ?? 'framework n/a',
+                gitStatus: status,
+                gitStatusLabel: statusLabel,
+            });
+        }
+        const coolifyLimit = coolifyApps.slice(0, 10);
+        for (const app of coolifyLimit) {
+            const parsed = this.parseRepoIdentifier(app.git_repository);
+            let status = 'unknown';
+            let statusLabel = 'Unknown';
+            if (parsed) {
+                const branch = app.git_branch || 'main';
+                const latest = await this.getLatestGitCommit(github, cache, parsed.owner, parsed.repo, branch);
+                if (latest) {
+                    const updatedAt = DashboardPanel.normalizeTimestamp(app.updated_at);
+                    const hasNewUpdate = latest.date > updatedAt + 60000;
+                    status = hasNewUpdate ? 'new-update' : 'up-to-date';
+                    statusLabel = hasNewUpdate ? 'New update available' : 'Up to date';
+                }
+            }
+            resources.push({
+                key: `coolify-${app.uuid}`,
+                provider: 'Coolify',
+                projectId: app.uuid,
+                projectName: app.name,
+                detailLabel: app.status || 'status n/a',
+                gitStatus: status,
+                gitStatusLabel: statusLabel,
+            });
+        }
+        return resources;
+    }
+    async getLatestGitCommit(github, cache, owner, repo, branch) {
+        const key = `${owner}/${repo}@${branch}`.toLowerCase();
+        if (cache.has(key)) {
+            return cache.get(key) ?? null;
+        }
+        const commit = await github.getLatestCommit(owner, repo, branch);
+        if (!commit) {
+            cache.set(key, null);
+            return null;
+        }
+        const result = {
+            sha: commit.sha,
+            date: DashboardPanel.normalizeTimestamp(commit.commit.author.date),
+        };
+        cache.set(key, result);
+        return result;
+    }
+    parseRepoIdentifier(value) {
+        if (!value) {
+            return null;
+        }
+        const normalized = value
+            .trim()
+            .replace(/^https?:\/\/github\.com\//i, '')
+            .replace(/^git@github\.com:/i, '')
+            .replace(/\.git$/i, '');
+        const parts = normalized.split('/');
+        if (parts.length < 2 || !parts[0] || !parts[1]) {
+            return null;
+        }
+        return { owner: parts[0], repo: parts[1] };
+    }
+    async getLatestVercelDeployment(vercel, projectId) {
+        if (!vercel) {
+            return null;
+        }
+        try {
+            const deployments = await vercel.listDeployments(projectId, 1);
+            return deployments[0] ?? null;
+        }
+        catch {
+            return null;
+        }
+    }
+    extractCommitSha(meta) {
+        if (!meta) {
+            return null;
+        }
+        const directKeys = ['githubCommitSha', 'githubCommitHash', 'githubCommitRef', 'githubCommit'];
+        for (const key of directKeys) {
+            const value = meta[key];
+            if (value && value.length >= 7) {
+                return value.toLowerCase();
+            }
+        }
+        for (const value of Object.values(meta)) {
+            const match = value.match(/[0-9a-f]{40}/i);
+            if (match) {
+                return match[0].toLowerCase();
+            }
+        }
+        return null;
     }
     getDashboardHtml(data) {
         const hasProvider = data.vercelConnected || data.coolifyConnected;
@@ -339,27 +507,42 @@ class DashboardPanel {
                     <button id="btn-open-logs" class="ghost-btn" type="button">Open Logs</button>
                 </div>
             `;
-        const vercelList = data.vercelProjects.length
-            ? data.vercelProjects
-                .slice(0, 10)
-                .map((project) => `
-                        <li>
-                            <span>${DashboardPanel.escapeHtml(project.name)}</span>
-                            <small>${DashboardPanel.escapeHtml(project.framework ?? 'framework n/a')}</small>
-                        </li>
-                    `)
-                .join('')
+        const vercelManaged = data.managedResources.filter((item) => item.provider === 'Vercel');
+        const coolifyManaged = data.managedResources.filter((item) => item.provider === 'Coolify');
+        const renderResourceRow = (item, index) => {
+            const stateClass = item.gitStatus === 'new-update'
+                ? 'git-pill-warning'
+                : item.gitStatus === 'up-to-date'
+                    ? 'git-pill-ok'
+                    : 'git-pill-unknown';
+            const needsRedeploy = item.gitStatus === 'new-update';
+            return `
+                <li class="resource-item">
+                    <div class="resource-meta">
+                        <strong>${DashboardPanel.escapeHtml(item.projectName)}</strong>
+                        <small>${DashboardPanel.escapeHtml(item.detailLabel)}</small>
+                        <span class="git-pill ${stateClass}" id="git-status-${index}">${DashboardPanel.escapeHtml(item.gitStatusLabel)}</span>
+                    </div>
+                    <div class="resource-actions">
+                        <button
+                            class="ghost-btn redeploy-resource-btn"
+                            data-action="redeploy-resource"
+                            data-provider="${DashboardPanel.escapeHtml(item.provider)}"
+                            data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
+                            data-project-name="${DashboardPanel.escapeHtml(item.projectName)}"
+                            data-resource-key="${DashboardPanel.escapeHtml(item.key)}"
+                            type="button"
+                        >${needsRedeploy ? 'Redeploy Needed' : 'Redeploy'}</button>
+                        <small id="redeploy-status-${DashboardPanel.escapeHtml(item.key)}" class="redeploy-status"></small>
+                    </div>
+                </li>
+            `;
+        };
+        const vercelList = vercelManaged.length
+            ? vercelManaged.map((item, index) => renderResourceRow(item, index)).join('')
             : '<li class="muted">No Vercel projects found.</li>';
-        const coolifyList = data.coolifyApps.length
-            ? data.coolifyApps
-                .slice(0, 10)
-                .map((app) => `
-                        <li>
-                            <span>${DashboardPanel.escapeHtml(app.name)}</span>
-                            <small>${DashboardPanel.escapeHtml(app.status || 'status n/a')}</small>
-                        </li>
-                    `)
-                .join('')
+        const coolifyList = coolifyManaged.length
+            ? coolifyManaged.map((item, index) => renderResourceRow(item, index + 100)).join('')
             : '<li class="muted">No Coolify apps found.</li>';
         const nonce = DashboardPanel.getNonce();
         return `
@@ -691,6 +874,66 @@ class DashboardPanel {
                         color: #9eacd6;
                     }
 
+                    .resource-item {
+                        align-items: flex-start !important;
+                    }
+
+                    .resource-meta {
+                        min-width: 0;
+                        display: grid;
+                        gap: 4px;
+                    }
+
+                    .resource-actions {
+                        display: grid;
+                        gap: 4px;
+                        justify-items: end;
+                    }
+
+                    .git-pill {
+                        font-size: 10px;
+                        padding: 2px 8px;
+                        border-radius: 999px;
+                        width: fit-content;
+                        border: 1px solid transparent;
+                    }
+
+                    .git-pill-ok {
+                        color: #75f3c7;
+                        background: rgba(57, 179, 125, 0.18);
+                        border-color: rgba(91, 235, 170, 0.38);
+                    }
+
+                    .git-pill-warning {
+                        color: #ffd994;
+                        background: rgba(240, 152, 56, 0.18);
+                        border-color: rgba(255, 184, 95, 0.38);
+                    }
+
+                    .git-pill-unknown {
+                        color: #c3cced;
+                        background: rgba(117, 138, 242, 0.12);
+                        border-color: rgba(117, 138, 242, 0.28);
+                    }
+
+                    .redeploy-resource-btn[disabled] {
+                        cursor: not-allowed;
+                        opacity: 0.7;
+                        transform: none;
+                    }
+
+                    .redeploy-status {
+                        min-height: 14px;
+                    }
+
+                    .redeploy-status.ok {
+                        color: #75f3c7;
+                    }
+
+                    .redeploy-status.error {
+                        color: #ffabab;
+                    }
+
                     .empty-block,
                     .muted {
                         color: #95a2c9;
@@ -762,7 +1005,13 @@ class DashboardPanel {
                     </section>
 
                     <section class="card section" aria-labelledby="resources-heading">
-                        <h2 id="resources-heading">Managed Resources</h2>
+                        <div class="provider-row">
+                            <div>
+                                <h2 id="resources-heading">Managed Resources</h2>
+                                <small>Git status checked: ${DashboardPanel.escapeHtml(data.gitStatusGeneratedAt)}</small>
+                            </div>
+                            <button id="btn-check-git" class="accent-btn" type="button">Check Git Updates</button>
+                        </div>
                         <div class="resource-grid">
                             <div>
                                 <h3>Vercel Projects (${data.vercelProjects.length})</h3>
@@ -779,14 +1028,43 @@ class DashboardPanel {
 
                 <script nonce="${nonce}">
                     const vscode = acquireVsCodeApi();
+                    const pendingRequests = new Map();
 
                     function send(command, payload = {}) {
                         vscode.postMessage({ command, ...payload });
                     }
 
+                    function sendWithReply(command, payload = {}) {
+                        const requestId = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+                        return new Promise((resolve) => {
+                            pendingRequests.set(requestId, resolve);
+                            send(command, { ...payload, requestId });
+                        });
+                    }
+
+                    window.addEventListener('message', (event) => {
+                        const message = event.data;
+                        if (!message || message.command !== 'redeployResult' || !message.requestId) {
+                            return;
+                        }
+
+                        const resolver = pendingRequests.get(message.requestId);
+                        if (!resolver) {
+                            return;
+                        }
+
+                        pendingRequests.delete(message.requestId);
+                        resolver(message);
+                    });
+
                     const refreshButton = document.getElementById('btn-refresh');
                     if (refreshButton) {
                         refreshButton.addEventListener('click', () => send('refresh'));
+                    }
+
+                    const checkGitButton = document.getElementById('btn-check-git');
+                    if (checkGitButton) {
+                        checkGitButton.addEventListener('click', () => send('checkGitUpdates'));
                     }
 
                     const connectVercelButton = document.getElementById('btn-connect-vercel');
@@ -822,6 +1100,50 @@ class DashboardPanel {
                                 projectId: logButton.getAttribute('data-project-id') || undefined,
                                 projectName: logButton.getAttribute('data-project-name') || undefined,
                             });
+                        });
+                    }
+
+                    const redeployButtons = document.querySelectorAll('[data-action="redeploy-resource"]');
+                    for (const redeployButton of redeployButtons) {
+                        redeployButton.addEventListener('click', async () => {
+                            if (redeployButton.disabled) {
+                                return;
+                            }
+
+                            const provider = redeployButton.getAttribute('data-provider') || '';
+                            const projectId = redeployButton.getAttribute('data-project-id') || '';
+                            const projectName = redeployButton.getAttribute('data-project-name') || '';
+                            const resourceKey = redeployButton.getAttribute('data-resource-key') || '';
+                            const statusNode = document.getElementById('redeploy-status-' + resourceKey);
+
+                            redeployButton.disabled = true;
+                            const baseLabel = redeployButton.textContent || 'Redeploy';
+                            redeployButton.textContent = 'Redeploying...';
+                            if (statusNode) {
+                                statusNode.classList.remove('ok', 'error');
+                                statusNode.textContent = 'In progress...';
+                            }
+
+                            const result = await sendWithReply('redeployResource', {
+                                provider,
+                                projectId,
+                                projectName,
+                            });
+
+                            redeployButton.disabled = false;
+                            redeployButton.textContent = baseLabel;
+
+                            if (statusNode) {
+                                if (result.success) {
+                                    statusNode.classList.remove('error');
+                                    statusNode.classList.add('ok');
+                                    statusNode.textContent = 'Success';
+                                } else {
+                                    statusNode.classList.remove('ok');
+                                    statusNode.classList.add('error');
+                                    statusNode.textContent = 'Failed: ' + (result.error || 'Unknown error');
+                                }
+                            }
                         });
                     }
                 </script>

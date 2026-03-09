@@ -100,8 +100,19 @@ function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.deployProject', async () => {
         await (0, deployProject_1.deployProject)(doRefresh);
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.redeployProject', async () => {
-        await (0, redeployProject_1.redeployProject)(doRefresh);
+    context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.redeployProject', async (payload) => {
+        const target = payload?.target;
+        const provider = target?.provider === 'Vercel' || target?.provider === 'Coolify'
+            ? target.provider
+            : undefined;
+        const parsedTarget = provider &&
+            typeof target?.id === 'string' &&
+            target.id.length > 0 &&
+            typeof target?.name === 'string' &&
+            target.name.length > 0
+            ? { provider, id: target.id, name: target.name }
+            : undefined;
+        return (0, redeployProject_1.redeployProject)(doRefresh, { target: parsedTarget, notify: payload?.notify });
     }));
     context.subscriptions.push(vscode.commands.registerCommand('deploymentManager.refreshProjects', async () => {
         await (0, refreshProjects_1.refreshProjects)(doRefresh);

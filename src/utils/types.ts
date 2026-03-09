@@ -49,6 +49,7 @@ export interface VercelProject {
 
 /** Vercel deployment as returned by the API. */
 export interface VercelDeployment {
+    id?: string;
     uid: string;
     name: string;
     url: string;
