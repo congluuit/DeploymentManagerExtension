@@ -41,6 +41,14 @@ export declare class CoolifyClient {
     /** Get application logs. */
     getApplicationLogs(uuid: string): Promise<string>;
     /**
+     * Import and upsert environment variables for an application.
+     * Tries update first, then create if the key does not exist yet.
+     */
+    upsertApplicationEnvVars(uuid: string, envVars: Record<string, string>): Promise<{
+        imported: number;
+        failed: string[];
+    }>;
+    /**
      * Check if an application exists by name or repo URL.
      * Returns the matched application or null.
      */

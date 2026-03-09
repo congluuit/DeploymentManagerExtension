@@ -44,6 +44,14 @@ export declare class VercelClient {
     /** Get deployment details. */
     getDeployment(deploymentId: string): Promise<VercelDeployment>;
     /**
+     * Import and upsert environment variables for a project.
+     * Uses Vercel's upsert mode so existing keys are replaced.
+     */
+    upsertProjectEnvVars(projectId: string, envVars: Record<string, string>, targets?: string[]): Promise<{
+        imported: number;
+        failed: string[];
+    }>;
+    /**
      * Check if a project exists by name or repo URL.
      * Returns the matched project or null.
      */

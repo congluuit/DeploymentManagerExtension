@@ -127,6 +127,29 @@ class VercelClient {
         return this.request('GET', `/v13/deployments/${encodeURIComponent(deploymentId)}`);
     }
     /**
+     * Import and upsert environment variables for a project.
+     * Uses Vercel's upsert mode so existing keys are replaced.
+     */
+    async upsertProjectEnvVars(projectId, envVars, targets = ['production', 'preview', 'development']) {
+        let imported = 0;
+        const failed = [];
+        for (const [key, value] of Object.entries(envVars)) {
+            try {
+                await this.request('POST', `/v10/projects/${encodeURIComponent(projectId)}/env?upsert=true`, {
+                    key,
+                    value,
+                    target: targets,
+                    type: 'plain',
+                });
+                imported += 1;
+            }
+            catch {
+                failed.push(key);
+            }
+        }
+        return { imported, failed };
+    }
+    /**
      * Check if a project exists by name or repo URL.
      * Returns the matched project or null.
      */

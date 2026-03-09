@@ -94,6 +94,41 @@ class CoolifyClient {
         return result.logs || '';
     }
     /**
+     * Import and upsert environment variables for an application.
+     * Tries update first, then create if the key does not exist yet.
+     */
+    async upsertApplicationEnvVars(uuid, envVars) {
+        let imported = 0;
+        const failed = [];
+        const encodedUuid = encodeURIComponent(uuid);
+        for (const [key, value] of Object.entries(envVars)) {
+            const payload = {
+                key,
+                value,
+                is_preview: false,
+                is_literal: true,
+                is_multiline: value.includes('\n'),
+                is_shown_once: false,
+            };
+            try {
+                await this.request('PATCH', `/api/v1/applications/${encodedUuid}/envs`, payload);
+                imported += 1;
+                continue;
+            }
+            catch {
+                // Fallback to create for missing keys.
+            }
+            try {
+                await this.request('POST', `/api/v1/applications/${encodedUuid}/envs`, payload);
+                imported += 1;
+            }
+            catch {
+                failed.push(key);
+            }
+        }
+        return { imported, failed };
+    }
+    /**
      * Check if an application exists by name or repo URL.
      * Returns the matched application or null.
      */

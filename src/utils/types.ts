@@ -121,6 +121,7 @@ export interface NetlifyBuild {
 export interface NetlifySite {
     id: string;
     name: string;
+    account_id?: string;
     state?: string;
     url?: string;
     ssl_url?: string;

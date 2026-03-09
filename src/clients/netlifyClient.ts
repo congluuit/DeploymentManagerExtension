@@ -166,6 +166,61 @@ export class NetlifyClient {
         }
     }
 
+    /**
+     * Import and upsert environment variables for a site.
+     * Uses account-level env endpoints with the site_id query parameter.
+     */
+    async upsertSiteEnvVars(siteId: string, envVars: Record<string, string>): Promise<{ imported: number; failed: string[] }> {
+        const site = await this.getSite(siteId);
+        const accountId = site.account_id;
+        if (!accountId) {
+            throw new Error(`Unable to resolve Netlify account_id for site "${siteId}".`);
+        }
+
+        const encodedAccountId = encodeURIComponent(accountId);
+        const encodedSiteId = encodeURIComponent(siteId);
+        let imported = 0;
+        const failed: string[] = [];
+
+        for (const [key, value] of Object.entries(envVars)) {
+            const encodedKey = encodeURIComponent(key);
+
+            try {
+                await this.request<unknown>(
+                    'PATCH',
+                    `/accounts/${encodedAccountId}/env/${encodedKey}?site_id=${encodedSiteId}`,
+                    {
+                        context: 'all',
+                        value,
+                    }
+                );
+                imported += 1;
+                continue;
+            } catch {
+                // Fallback to create when the key does not exist yet.
+            }
+
+            try {
+                await this.request<unknown>(
+                    'POST',
+                    `/accounts/${encodedAccountId}/env?site_id=${encodedSiteId}`,
+                    [
+                        {
+                            key,
+                            values: [{ context: 'all', value }],
+                            is_secret: false,
+                        },
+                    ]
+                );
+                imported += 1;
+            } catch {
+                failed.push(key);
+            }
+        }
+
+        return { imported, failed };
+    }
+
     async findSiteByNameOrRepo(name: string, repoUrl: string | null): Promise<NetlifySite | null> {
         try {
             const sites = await this.listSites();

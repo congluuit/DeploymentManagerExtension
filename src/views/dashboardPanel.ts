@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
+import { readFile } from 'fs/promises';
 import { promisify } from 'util';
 import { CoolifyClient } from '../clients/coolifyClient';
 import { GitHubClient } from '../clients/githubClient';
@@ -58,13 +59,17 @@ interface DashboardWebviewMessage {
     | 'deployProject'
     | 'redeployProject'
     | 'redeployResource'
+    | 'visitResourceSite'
+    | 'importResourceEnv'
     | 'openLogs'
     | 'redeployResult';
     requestId?: string;
     provider?: string;
     projectId?: string;
     projectName?: string;
+    siteUrl?: string;
     success?: boolean;
+    imported?: number;
     error?: string;
     sectionBodyHtml?: string;
     latestCommitLabel?: string;
@@ -76,8 +81,9 @@ interface ManagedResourceItem {
     projectId: string;
     projectName: string;
     detailLabel: string;
-    gitStatus: 'up-to-date' | 'new-update' | 'unknown';
-    gitStatusLabel: string;
+    deploymentStatus: 'ready' | 'not-ready';
+    deploymentStatusLabel: string;
+    siteUrl: string | null;
 }
 
 /**
@@ -250,6 +256,62 @@ export class DashboardPanel {
                 }
                 return;
             }
+            case 'visitResourceSite': {
+                if (!this.isProviderName(message.provider) || !message.projectId) {
+                    vscode.window.showWarningMessage('Missing resource metadata for Visit Site.');
+                    return;
+                }
+
+                const resolvedUrl = await this.resolveSiteUrl(
+                    message.provider,
+                    message.projectId,
+                    message.siteUrl
+                );
+
+                if (!resolvedUrl) {
+                    vscode.window.showWarningMessage(`No public URL found for ${message.projectName || message.projectId}.`);
+                    return;
+                }
+
+                await vscode.env.openExternal(vscode.Uri.parse(resolvedUrl));
+                return;
+            }
+            case 'importResourceEnv': {
+                if (!message.requestId || !this.isProviderName(message.provider) || !message.projectId) {
+                    this.panel.webview.postMessage({
+                        command: 'importEnvResult',
+                        requestId: message.requestId,
+                        success: false,
+                        error: 'Missing provider/project metadata for .env import.',
+                    });
+                    return;
+                }
+
+                try {
+                    const result = await this.importEnvForResource(
+                        message.provider,
+                        message.projectId
+                    );
+                    this.panel.webview.postMessage({
+                        command: 'importEnvResult',
+                        requestId: message.requestId,
+                        success: result.failed.length === 0,
+                        imported: result.imported,
+                        error: result.failed.length > 0
+                            ? `Failed keys: ${result.failed.join(', ')}`
+                            : undefined,
+                    });
+                } catch (error) {
+                    const text = error instanceof Error ? error.message : String(error);
+                    this.panel.webview.postMessage({
+                        command: 'importEnvResult',
+                        requestId: message.requestId,
+                        success: false,
+                        error: text,
+                    });
+                }
+                return;
+            }
             case 'openLogs':
                 if (message.provider && message.projectId) {
                     await vscode.commands.executeCommand('deploymentManager.openLogs', {
@@ -266,6 +328,134 @@ export class DashboardPanel {
             default:
                 return;
         }
+    }
+
+    private isProviderName(value: string | undefined): value is ProviderName {
+        return value === 'Vercel' || value === 'Coolify' || value === 'Netlify';
+    }
+
+    private async resolveSiteUrl(
+        provider: ProviderName,
+        projectId: string,
+        preferredUrl?: string
+    ): Promise<string | null> {
+        const normalizedPreferred = this.normalizePublicUrl(preferredUrl);
+        if (normalizedPreferred) {
+            return normalizedPreferred;
+        }
+
+        try {
+            if (provider === 'Vercel') {
+                const deployment = await this.getLatestVercelDeployment(new VercelClient(), projectId);
+                return deployment?.url ? this.normalizePublicUrl(`https://${deployment.url}`) : null;
+            }
+
+            if (provider === 'Coolify') {
+                const app = await new CoolifyClient().getApplication(projectId);
+                return this.normalizePublicUrl(app.fqdn);
+            }
+
+            const netlify = new NetlifyClient();
+            const site = await netlify.getSite(projectId);
+            const latestDeploy = await this.getLatestNetlifyDeploy(netlify, projectId);
+            return this.normalizePublicUrl(
+                site.ssl_url ||
+                site.url ||
+                site.deploy_url ||
+                latestDeploy?.deploy_ssl_url ||
+                latestDeploy?.ssl_url ||
+                latestDeploy?.deploy_url ||
+                latestDeploy?.url
+            );
+        } catch {
+            return null;
+        }
+    }
+
+    private async importEnvForResource(
+        provider: ProviderName,
+        projectId: string
+    ): Promise<{ imported: number; failed: string[] }> {
+        const picked = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+            filters: {
+                'Environment Files': ['env'],
+                'All Files': ['*'],
+            },
+            openLabel: 'Import .env',
+            title: 'Select .env file to import',
+        });
+
+        if (!picked || picked.length === 0) {
+            throw new Error('Import canceled.');
+        }
+
+        const content = await readFile(picked[0].fsPath, 'utf8');
+        const envVars = this.parseDotEnv(content);
+        const count = Object.keys(envVars).length;
+        if (count === 0) {
+            throw new Error('No valid KEY=VALUE entries found in the selected file.');
+        }
+
+        if (provider === 'Vercel') {
+            return new VercelClient().upsertProjectEnvVars(projectId, envVars);
+        }
+
+        if (provider === 'Coolify') {
+            return new CoolifyClient().upsertApplicationEnvVars(projectId, envVars);
+        }
+
+        return new NetlifyClient().upsertSiteEnvVars(projectId, envVars);
+    }
+
+    private parseDotEnv(content: string): Record<string, string> {
+        const parsed: Record<string, string> = {};
+        const lines = content.split(/\r?\n/);
+
+        for (const originalLine of lines) {
+            const trimmed = originalLine.trim();
+            if (!trimmed || trimmed.startsWith('#')) {
+                continue;
+            }
+
+            const line = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+            const separator = line.indexOf('=');
+            if (separator <= 0) {
+                continue;
+            }
+
+            const key = line.slice(0, separator).trim();
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+                continue;
+            }
+
+            let value = line.slice(separator + 1).trim();
+
+            const hasMatchingDoubleQuotes = value.startsWith('"') && value.endsWith('"') && value.length >= 2;
+            const hasMatchingSingleQuotes = value.startsWith('\'') && value.endsWith('\'') && value.length >= 2;
+
+            if (hasMatchingDoubleQuotes) {
+                value = value.slice(1, -1)
+                    .replace(/\\n/g, '\n')
+                    .replace(/\\r/g, '\r')
+                    .replace(/\\"/g, '"')
+                    .replace(/\\\\/g, '\\');
+            } else if (hasMatchingSingleQuotes) {
+                value = value.slice(1, -1);
+            } else {
+                const inlineCommentIndex = value.indexOf(' #');
+                if (inlineCommentIndex >= 0) {
+                    value = value.slice(0, inlineCommentIndex).trimEnd();
+                }
+            }
+
+            parsed[key] = value;
+        }
+
+        return parsed;
     }
 
     private async render(): Promise<void> {
@@ -503,35 +693,17 @@ export class DashboardPanel {
         netlifyConnected: boolean
     ): Promise<ManagedResourceItem[]> {
         const resources: ManagedResourceItem[] = [];
-        const github = new GitHubClient();
-        const cache = new Map<string, { sha: string; date: number } | null>();
         const vercel = vercelConnected ? new VercelClient() : null;
         const netlify = netlifyConnected ? new NetlifyClient() : null;
 
         const vercelLimit = vercelProjects.slice(0, 10);
         for (const project of vercelLimit) {
-            const parsed = this.parseRepoIdentifier(project.link?.repo);
-            let status: ManagedResourceItem['gitStatus'] = 'unknown';
-            let statusLabel = 'Unknown';
-
-            if (parsed) {
-                const branch = project.link?.productionBranch || 'main';
-                const latest = await this.getLatestGitCommit(github, cache, parsed.owner, parsed.repo, branch);
-                if (latest) {
-                    const latestDeployment = await this.getLatestVercelDeployment(vercel, project.id);
-                    const deploymentSha = this.extractCommitSha(latestDeployment?.meta);
-                    const deploymentTimestamp = latestDeployment
-                        ? DashboardPanel.normalizeTimestamp(latestDeployment.createdAt ?? latestDeployment.created)
-                        : 0;
-
-                    const hasNewUpdate = deploymentSha
-                        ? deploymentSha !== latest.sha
-                        : deploymentTimestamp > 0 && latest.date > deploymentTimestamp + 60_000;
-
-                    status = hasNewUpdate ? 'new-update' : 'up-to-date';
-                    statusLabel = hasNewUpdate ? 'New update available' : 'Up to date';
-                }
-            }
+            const latestDeployment = await this.getLatestVercelDeployment(vercel, project.id);
+            const rawState = latestDeployment?.state ?? 'unknown';
+            const status = this.toManagedStatus('Vercel', rawState);
+            const siteUrl = latestDeployment?.url
+                ? this.normalizePublicUrl(`https://${latestDeployment.url}`)
+                : null;
 
             resources.push({
                 key: `vercel-${project.id}`,
@@ -539,27 +711,17 @@ export class DashboardPanel {
                 projectId: project.id,
                 projectName: project.name,
                 detailLabel: project.framework ?? 'framework n/a',
-                gitStatus: status,
-                gitStatusLabel: statusLabel,
+                deploymentStatus: status,
+                deploymentStatusLabel: status === 'ready' ? 'Ready' : 'Not Ready',
+                siteUrl,
             });
         }
 
         const coolifyLimit = coolifyApps.slice(0, 10);
         for (const app of coolifyLimit) {
-            const parsed = this.parseRepoIdentifier(app.git_repository);
-            let status: ManagedResourceItem['gitStatus'] = 'unknown';
-            let statusLabel = 'Unknown';
-
-            if (parsed) {
-                const branch = app.git_branch || 'main';
-                const latest = await this.getLatestGitCommit(github, cache, parsed.owner, parsed.repo, branch);
-                if (latest) {
-                    const updatedAt = DashboardPanel.normalizeTimestamp(app.updated_at);
-                    const hasNewUpdate = latest.date > updatedAt + 60_000;
-                    status = hasNewUpdate ? 'new-update' : 'up-to-date';
-                    statusLabel = hasNewUpdate ? 'New update available' : 'Up to date';
-                }
-            }
+            const rawState = app.status || 'unknown';
+            const status = this.toManagedStatus('Coolify', rawState);
+            const siteUrl = this.normalizePublicUrl(app.fqdn);
 
             resources.push({
                 key: `coolify-${app.uuid}`,
@@ -567,94 +729,77 @@ export class DashboardPanel {
                 projectId: app.uuid,
                 projectName: app.name,
                 detailLabel: app.status || 'status n/a',
-                gitStatus: status,
-                gitStatusLabel: statusLabel,
+                deploymentStatus: status,
+                deploymentStatusLabel: status === 'ready' ? 'Ready' : 'Not Ready',
+                siteUrl,
             });
         }
 
         const netlifyLimit = netlifySites.slice(0, 10);
         for (const site of netlifyLimit) {
-            const repoSource = site.repo?.repo_url || site.build_settings?.repo_url || site.repo?.repo_path || site.build_settings?.repo_path;
-            const parsed = this.parseRepoIdentifier(repoSource);
-            let status: ManagedResourceItem['gitStatus'] = 'unknown';
-            let statusLabel = 'Unknown';
-
-            if (parsed) {
-                const branch = site.repo?.repo_branch || site.build_settings?.repo_branch || 'main';
-                const latest = await this.getLatestGitCommit(github, cache, parsed.owner, parsed.repo, branch);
-                if (latest) {
-                    const latestDeploy = await this.getLatestNetlifyDeploy(netlify, site.id);
-                    const deploySha = latestDeploy?.commit_ref?.toLowerCase() || null;
-                    const deployTimestamp = latestDeploy
-                        ? DashboardPanel.normalizeTimestamp(
-                            latestDeploy.published_at || latestDeploy.updated_at || latestDeploy.created_at
-                        )
-                        : 0;
-                    const hasNewUpdate = deploySha
-                        ? deploySha !== latest.sha.toLowerCase()
-                        : deployTimestamp > 0 && latest.date > deployTimestamp + 60_000;
-                    status = hasNewUpdate ? 'new-update' : 'up-to-date';
-                    statusLabel = hasNewUpdate ? 'New update available' : 'Up to date';
-                }
-            }
+            const latestDeploy = await this.getLatestNetlifyDeploy(netlify, site.id);
+            const rawState = latestDeploy?.state || site.state || 'unknown';
+            const status = this.toManagedStatus('Netlify', rawState);
+            const siteUrl = this.normalizePublicUrl(
+                site.ssl_url ||
+                site.url ||
+                site.deploy_url ||
+                latestDeploy?.deploy_ssl_url ||
+                latestDeploy?.ssl_url ||
+                latestDeploy?.deploy_url ||
+                latestDeploy?.url
+            );
 
             resources.push({
                 key: `netlify-${site.id}`,
                 provider: 'Netlify',
                 projectId: site.id,
                 projectName: site.name,
-                detailLabel: site.state || 'state n/a',
-                gitStatus: status,
-                gitStatusLabel: statusLabel,
+                detailLabel: rawState || 'state n/a',
+                deploymentStatus: status,
+                deploymentStatusLabel: status === 'ready' ? 'Ready' : 'Not Ready',
+                siteUrl,
             });
         }
 
         return resources;
     }
 
-    private async getLatestGitCommit(
-        github: GitHubClient,
-        cache: Map<string, { sha: string; date: number } | null>,
-        owner: string,
-        repo: string,
-        branch: string
-    ): Promise<{ sha: string; date: number } | null> {
-        const key = `${owner}/${repo}@${branch}`.toLowerCase();
-        if (cache.has(key)) {
-            return cache.get(key) ?? null;
+    private toManagedStatus(provider: ProviderName, rawState: string): ManagedResourceItem['deploymentStatus'] {
+        const value = rawState.toLowerCase();
+
+        if (provider === 'Vercel') {
+            return value === 'ready' ? 'ready' : 'not-ready';
         }
 
-        const commit = await github.getLatestCommit(owner, repo, branch);
-        if (!commit) {
-            cache.set(key, null);
-            return null;
+        if (provider === 'Coolify') {
+            return ['running', 'ready', 'healthy', 'active', 'started', 'up'].includes(value)
+                ? 'ready'
+                : 'not-ready';
         }
 
-        const result = {
-            sha: commit.sha,
-            date: DashboardPanel.normalizeTimestamp(commit.commit.author.date),
-        };
-        cache.set(key, result);
-        return result;
+        return ['ready', 'processed'].includes(value) ? 'ready' : 'not-ready';
     }
 
-    private parseRepoIdentifier(value: string | null | undefined): { owner: string; repo: string } | null {
+    private normalizePublicUrl(value: string | null | undefined): string | null {
         if (!value) {
             return null;
         }
 
-        const normalized = value
-            .trim()
-            .replace(/^https?:\/\/github\.com\//i, '')
-            .replace(/^git@github\.com:/i, '')
-            .replace(/\.git$/i, '');
-        const parts = normalized.split('/');
-
-        if (parts.length < 2 || !parts[0] || !parts[1]) {
+        const first = value.split(',')[0]?.trim();
+        if (!first) {
             return null;
         }
 
-        return { owner: parts[0], repo: parts[1] };
+        if (/^https?:\/\//i.test(first)) {
+            return first;
+        }
+
+        if (first.startsWith('//')) {
+            return `https:${first}`;
+        }
+
+        return `https://${first}`;
     }
 
     private async getLatestVercelDeployment(
@@ -687,29 +832,6 @@ export class DashboardPanel {
         } catch {
             return null;
         }
-    }
-
-    private extractCommitSha(meta: Record<string, string> | undefined): string | null {
-        if (!meta) {
-            return null;
-        }
-
-        const directKeys = ['githubCommitSha', 'githubCommitHash', 'githubCommitRef', 'githubCommit'];
-        for (const key of directKeys) {
-            const value = meta[key];
-            if (value && value.length >= 7) {
-                return value.toLowerCase();
-            }
-        }
-
-        for (const value of Object.values(meta)) {
-            const match = value.match(/[0-9a-f]{40}/i);
-            if (match) {
-                return match[0].toLowerCase();
-            }
-        }
-
-        return null;
     }
 
     private async getWorkspaceLatestCommitLabel(projectInfo: ProjectInfo | null): Promise<string> {
@@ -758,20 +880,40 @@ export class DashboardPanel {
 
     private getManagedResourceRowHtml(item: ManagedResourceItem, index: number): string {
         const stateClass =
-            item.gitStatus === 'new-update'
-                ? 'git-pill-warning'
-                : item.gitStatus === 'up-to-date'
-                    ? 'git-pill-ok'
-                    : 'git-pill-unknown';
-        const needsRedeploy = item.gitStatus === 'new-update';
+            item.deploymentStatus === 'ready'
+                ? 'git-pill-ok'
+                : 'git-pill-warning';
+
+        const visitAttrs = item.siteUrl
+            ? `data-site-url="${DashboardPanel.escapeHtml(item.siteUrl)}"`
+            : 'disabled';
+
         return `
             <li class="resource-item">
                 <div class="resource-meta">
                     <strong>${DashboardPanel.escapeHtml(item.projectName)}</strong>
                     <small>${DashboardPanel.escapeHtml(item.detailLabel)}</small>
-                    <span class="git-pill ${stateClass}" id="git-status-${index}">${DashboardPanel.escapeHtml(item.gitStatusLabel)}</span>
+                    <span class="git-pill ${stateClass}" id="git-status-${index}">${DashboardPanel.escapeHtml(item.deploymentStatusLabel)}</span>
                 </div>
                 <div class="resource-actions">
+                    <button
+                        class="ghost-btn"
+                        data-action="visit-site"
+                        data-provider="${DashboardPanel.escapeHtml(item.provider)}"
+                        data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
+                        data-project-name="${DashboardPanel.escapeHtml(item.projectName)}"
+                        ${visitAttrs}
+                        type="button"
+                    >Visit Site</button>
+                    <button
+                        class="ghost-btn"
+                        data-action="import-env"
+                        data-provider="${DashboardPanel.escapeHtml(item.provider)}"
+                        data-project-id="${DashboardPanel.escapeHtml(item.projectId)}"
+                        data-project-name="${DashboardPanel.escapeHtml(item.projectName)}"
+                        data-resource-key="${DashboardPanel.escapeHtml(item.key)}"
+                        type="button"
+                    >Import .env</button>
                     <button
                         class="ghost-btn redeploy-resource-btn"
                         data-action="redeploy-resource"
@@ -780,8 +922,9 @@ export class DashboardPanel {
                         data-project-name="${DashboardPanel.escapeHtml(item.projectName)}"
                         data-resource-key="${DashboardPanel.escapeHtml(item.key)}"
                         type="button"
-                    >${needsRedeploy ? 'Redeploy Needed' : 'Redeploy'}</button>
+                    >Redeploy</button>
                     <small id="redeploy-status-${DashboardPanel.escapeHtml(item.key)}" class="redeploy-status"></small>
+                    <small id="import-status-${DashboardPanel.escapeHtml(item.key)}" class="redeploy-status"></small>
                 </div>
             </li>
         `;
@@ -1326,7 +1469,7 @@ export class DashboardPanel {
                         border-color: rgba(117, 138, 242, 0.28);
                     }
 
-                    .redeploy-resource-btn[disabled] {
+                    .resource-actions .ghost-btn[disabled] {
                         cursor: not-allowed;
                         opacity: 0.7;
                         transform: none;
@@ -1624,6 +1767,71 @@ export class DashboardPanel {
                                     projectId: logButton.getAttribute('data-project-id') || undefined,
                                     projectName: logButton.getAttribute('data-project-name') || undefined,
                                 });
+                            });
+                        }
+
+                        const visitButtons = document.querySelectorAll('[data-action="visit-site"]');
+                        for (const visitButton of visitButtons) {
+                            if (visitButton.dataset.bound === 'true') {
+                                continue;
+                            }
+                            visitButton.dataset.bound = 'true';
+                            visitButton.addEventListener('click', () => {
+                                send('visitResourceSite', {
+                                    provider: visitButton.getAttribute('data-provider') || undefined,
+                                    projectId: visitButton.getAttribute('data-project-id') || undefined,
+                                    projectName: visitButton.getAttribute('data-project-name') || undefined,
+                                    siteUrl: visitButton.getAttribute('data-site-url') || undefined,
+                                });
+                            });
+                        }
+
+                        const importButtons = document.querySelectorAll('[data-action="import-env"]');
+                        for (const importButton of importButtons) {
+                            if (importButton.dataset.bound === 'true') {
+                                continue;
+                            }
+                            importButton.dataset.bound = 'true';
+                            importButton.addEventListener('click', async () => {
+                                if (importButton.disabled) {
+                                    return;
+                                }
+
+                                const provider = importButton.getAttribute('data-provider') || '';
+                                const projectId = importButton.getAttribute('data-project-id') || '';
+                                const projectName = importButton.getAttribute('data-project-name') || '';
+                                const resourceKey = importButton.getAttribute('data-resource-key') || '';
+                                const statusNode = document.getElementById('import-status-' + resourceKey);
+
+                                importButton.disabled = true;
+                                const baseLabel = importButton.textContent || 'Import .env';
+                                importButton.textContent = 'Importing...';
+                                if (statusNode) {
+                                    statusNode.classList.remove('ok', 'error');
+                                    statusNode.textContent = '';
+                                }
+
+                                const result = await sendWithReply(
+                                    'importResourceEnv',
+                                    { provider, projectId, projectName },
+                                    'importEnvResult'
+                                );
+
+                                importButton.disabled = false;
+                                importButton.textContent = baseLabel;
+
+                                if (statusNode) {
+                                    if (result.success) {
+                                        statusNode.classList.remove('error');
+                                        statusNode.classList.add('ok');
+                                        const count = typeof result.imported === 'number' ? result.imported : 0;
+                                        statusNode.textContent = 'Imported ' + count + ' vars';
+                                    } else {
+                                        statusNode.classList.remove('ok');
+                                        statusNode.classList.add('error');
+                                        statusNode.textContent = 'Failed: ' + (result.error || 'Unknown error');
+                                    }
+                                }
                             });
                         }
 

@@ -14,6 +14,10 @@ export declare class DashboardPanel {
     private readonly execFileAsync;
     private constructor();
     private handleMessage;
+    private isProviderName;
+    private resolveSiteUrl;
+    private importEnvForResource;
+    private parseDotEnv;
     private render;
     private collectData;
     private mapVercelDeployments;
@@ -21,11 +25,10 @@ export declare class DashboardPanel {
     private buildStateCounts;
     private normalizeState;
     private buildManagedResources;
-    private getLatestGitCommit;
-    private parseRepoIdentifier;
+    private toManagedStatus;
+    private normalizePublicUrl;
     private getLatestVercelDeployment;
     private getLatestNetlifyDeploy;
-    private extractCommitSha;
     private getWorkspaceLatestCommitLabel;
     private getLatestCommitFromLocalGit;
     private getManagedResourceRowHtml;

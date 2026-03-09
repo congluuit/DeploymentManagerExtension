@@ -40,6 +40,14 @@ export declare class NetlifyClient {
     listSiteBuildHooks(siteId: string): Promise<NetlifyBuildHook[]>;
     createSiteBuildHook(siteId: string, title: string, branch?: string): Promise<NetlifyBuildHook>;
     triggerBuildHook(url: string): Promise<void>;
+    /**
+     * Import and upsert environment variables for a site.
+     * Uses account-level env endpoints with the site_id query parameter.
+     */
+    upsertSiteEnvVars(siteId: string, envVars: Record<string, string>): Promise<{
+        imported: number;
+        failed: string[];
+    }>;
     findSiteByNameOrRepo(name: string, repoUrl: string | null): Promise<NetlifySite | null>;
     private normalizeRepoUrl;
 }
