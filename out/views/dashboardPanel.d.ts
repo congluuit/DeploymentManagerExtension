@@ -29,6 +29,8 @@ export declare class DashboardPanel {
     private toManagedStatusLabel;
     private getVercelState;
     private buildVercelStatusDetail;
+    private hasVercelBuildLogs;
+    private isVercelProjectDeployed;
     private extractVercelSource;
     private normalizePublicUrl;
     private matchesWorkspaceOnVercel;

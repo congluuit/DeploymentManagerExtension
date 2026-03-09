@@ -9,6 +9,7 @@ import {
     DashboardItemType,
     ProjectInfo,
     VercelProject,
+    VercelDeployment,
     CoolifyApplication,
     NetlifySite,
 } from '../utils/types';
@@ -135,7 +136,9 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
                             this.projectInfo.name,
                             this.projectInfo.repoUrl
                         );
-                        this.projectExistsOnVercel = match !== null;
+                        if (match) {
+                            this.projectExistsOnVercel = await this.isVercelProjectDeployed(vercel, match.id);
+                        }
                     }
                 } catch {
                     // Failed to fetch — keep empty list
@@ -443,6 +446,81 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         );
 
         return items;
+    }
+
+    private async isVercelProjectDeployed(vercel: VercelClient, projectId: string): Promise<boolean> {
+        const latest = await this.getLatestVercelDeployment(vercel, projectId);
+        if (!latest) {
+            return false;
+        }
+
+        const state = this.getVercelState(latest);
+        if (state === 'ready') {
+            return true;
+        }
+
+        return this.hasVercelBuildLogs(vercel, latest);
+    }
+
+    private async getLatestVercelDeployment(
+        vercel: VercelClient,
+        projectId: string
+    ): Promise<VercelDeployment | null> {
+        try {
+            const deployments = await vercel.listDeployments(projectId, 1);
+            const latest = deployments[0] ?? null;
+            if (!latest) {
+                return null;
+            }
+
+            const deploymentId = latest.uid || latest.id;
+            if (!deploymentId) {
+                return latest;
+            }
+
+            try {
+                const detailed = await vercel.getDeployment(deploymentId);
+                return {
+                    ...latest,
+                    ...detailed,
+                    uid: detailed.uid || latest.uid,
+                    name: detailed.name || latest.name,
+                };
+            } catch {
+                return latest;
+            }
+        } catch {
+            return null;
+        }
+    }
+
+    private getVercelState(deployment: VercelDeployment | null): string {
+        const raw = deployment?.state ?? deployment?.readyState ?? 'unknown';
+        return String(raw).toLowerCase();
+    }
+
+    private async hasVercelBuildLogs(vercel: VercelClient, deployment: VercelDeployment | null): Promise<boolean> {
+        if (!deployment) {
+            return false;
+        }
+
+        const deploymentId = deployment.uid || deployment.id;
+        if (!deploymentId) {
+            return false;
+        }
+
+        try {
+            const events = await vercel.getDeploymentEvents(deploymentId, { limit: 40, direction: 'backward' });
+            return events.some((event) => {
+                try {
+                    return JSON.stringify(event).toLowerCase().includes('ready');
+                } catch {
+                    return false;
+                }
+            });
+        } catch {
+            return false;
+        }
     }
 }
 

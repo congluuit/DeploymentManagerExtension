@@ -149,7 +149,9 @@ class DashboardProvider {
                     this.vercelProjects = await vercel.listProjects();
                     if (this.projectInfo) {
                         const match = await vercel.findProjectByNameOrRepo(this.projectInfo.name, this.projectInfo.repoUrl);
-                        this.projectExistsOnVercel = match !== null;
+                        if (match) {
+                            this.projectExistsOnVercel = await this.isVercelProjectDeployed(vercel, match.id);
+                        }
                     }
                 }
                 catch {
@@ -356,6 +358,72 @@ class DashboardProvider {
         }
         items.push(new DashboardItem('Deploy Project', 'deployAction', vscode.TreeItemCollapsibleState.None));
         return items;
+    }
+    async isVercelProjectDeployed(vercel, projectId) {
+        const latest = await this.getLatestVercelDeployment(vercel, projectId);
+        if (!latest) {
+            return false;
+        }
+        const state = this.getVercelState(latest);
+        if (state === 'ready') {
+            return true;
+        }
+        return this.hasVercelBuildLogs(vercel, latest);
+    }
+    async getLatestVercelDeployment(vercel, projectId) {
+        try {
+            const deployments = await vercel.listDeployments(projectId, 1);
+            const latest = deployments[0] ?? null;
+            if (!latest) {
+                return null;
+            }
+            const deploymentId = latest.uid || latest.id;
+            if (!deploymentId) {
+                return latest;
+            }
+            try {
+                const detailed = await vercel.getDeployment(deploymentId);
+                return {
+                    ...latest,
+                    ...detailed,
+                    uid: detailed.uid || latest.uid,
+                    name: detailed.name || latest.name,
+                };
+            }
+            catch {
+                return latest;
+            }
+        }
+        catch {
+            return null;
+        }
+    }
+    getVercelState(deployment) {
+        const raw = deployment?.state ?? deployment?.readyState ?? 'unknown';
+        return String(raw).toLowerCase();
+    }
+    async hasVercelBuildLogs(vercel, deployment) {
+        if (!deployment) {
+            return false;
+        }
+        const deploymentId = deployment.uid || deployment.id;
+        if (!deploymentId) {
+            return false;
+        }
+        try {
+            const events = await vercel.getDeploymentEvents(deploymentId, { limit: 40, direction: 'backward' });
+            return events.some((event) => {
+                try {
+                    return JSON.stringify(event).toLowerCase().includes('ready');
+                }
+                catch {
+                    return false;
+                }
+            });
+        }
+        catch {
+            return false;
+        }
     }
 }
 exports.DashboardProvider = DashboardProvider;

@@ -433,7 +433,9 @@ class DashboardPanel {
                 vercelProjects = await vercel.listProjects();
                 if (projectInfo) {
                     const matched = await vercel.findProjectByNameOrRepo(projectInfo.name, projectInfo.repoUrl);
-                    projectExistsOnVercel = matched !== null;
+                    if (matched) {
+                        projectExistsOnVercel = await this.isVercelProjectDeployed(vercel, matched.id);
+                    }
                     if (matched) {
                         const deployments = await vercel.listDeployments(matched.id, 8);
                         activity.push(...this.mapVercelDeployments(deployments, matched.name, matched.id));
@@ -499,7 +501,6 @@ class DashboardPanel {
             }
         }
         if (projectInfo) {
-            projectExistsOnVercel = projectExistsOnVercel || this.matchesWorkspaceOnVercel(projectInfo, vercelProjects);
             projectExistsOnCoolify = projectExistsOnCoolify || this.matchesWorkspaceOnCoolify(projectInfo, coolifyApps);
             projectExistsOnNetlify = projectExistsOnNetlify || this.matchesWorkspaceOnNetlify(projectInfo, netlifySites);
         }
@@ -594,11 +595,13 @@ class DashboardPanel {
         for (const project of vercelLimit) {
             const latestDeployment = await this.getLatestVercelDeployment(vercel, project.id);
             const rawState = this.getVercelState(latestDeployment);
-            const status = this.toManagedStatus('Vercel', rawState);
+            const hasLogs = await this.hasVercelBuildLogs(vercel, latestDeployment);
+            const effectiveState = rawState === 'ready' || hasLogs ? 'ready' : rawState;
+            const status = this.toManagedStatus('Vercel', effectiveState);
             const siteUrl = latestDeployment?.url
                 ? this.normalizePublicUrl(`https://${latestDeployment.url}`)
                 : null;
-            const statusDetailLabel = this.buildVercelStatusDetail(latestDeployment);
+            const statusDetailLabel = this.buildVercelStatusDetail(latestDeployment, hasLogs);
             resources.push({
                 key: `vercel-${project.id}`,
                 provider: 'Vercel',
@@ -607,7 +610,7 @@ class DashboardPanel {
                 detailLabel: project.framework ?? 'framework n/a',
                 statusDetailLabel,
                 deploymentStatus: status,
-                deploymentStatusLabel: this.toManagedStatusLabel('Vercel', rawState, status),
+                deploymentStatusLabel: this.toManagedStatusLabel('Vercel', effectiveState, status),
                 siteUrl,
             });
         }
@@ -724,7 +727,7 @@ class DashboardPanel {
         const raw = deployment?.state ?? deployment?.readyState ?? 'unknown';
         return String(raw).toLowerCase();
     }
-    buildVercelStatusDetail(deployment) {
+    buildVercelStatusDetail(deployment, hasLogs = false) {
         if (!deployment) {
             return undefined;
         }
@@ -737,7 +740,44 @@ class DashboardPanel {
         if (source) {
             parts.push(`From ${source}`);
         }
+        if (hasLogs && this.getVercelState(deployment) !== 'ready') {
+            parts.push('Logs available');
+        }
         return parts.length > 0 ? parts.join(' • ') : undefined;
+    }
+    async hasVercelBuildLogs(vercel, deployment) {
+        if (!vercel || !deployment) {
+            return false;
+        }
+        const deploymentId = deployment.uid || deployment.id;
+        if (!deploymentId) {
+            return false;
+        }
+        try {
+            const events = await vercel.getDeploymentEvents(deploymentId, { limit: 40, direction: 'backward' });
+            return events.some((event) => {
+                try {
+                    return JSON.stringify(event).toLowerCase().includes('ready');
+                }
+                catch {
+                    return false;
+                }
+            });
+        }
+        catch {
+            return false;
+        }
+    }
+    async isVercelProjectDeployed(vercel, projectId) {
+        const latest = await this.getLatestVercelDeployment(vercel, projectId);
+        if (!latest) {
+            return false;
+        }
+        const state = this.getVercelState(latest);
+        if (state === 'ready') {
+            return true;
+        }
+        return this.hasVercelBuildLogs(vercel, latest);
     }
     extractVercelSource(deployment) {
         const creator = deployment.creator;
