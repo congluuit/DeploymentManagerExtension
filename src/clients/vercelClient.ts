@@ -139,45 +139,48 @@ export class VercelClient {
         return this.request<VercelDeployment>('POST', '/v13/deployments', body);
     }
 
-    /** Redeploy an existing Vercel project by cloning its latest eligible deployment. */
+    /**
+     * Trigger a deployment from the linked Git repository.
+     * Uses latest commit from the provided branch (or production branch fallback).
+     */
+    async deployProjectFromGit(
+        projectId: string,
+        name: string,
+        options?: {
+            branch?: string;
+            repoId?: string | number;
+            target?: 'production' | 'staging' | string;
+        }
+    ): Promise<VercelDeployment> {
+        const project = await this.getProject(projectId);
+        const repoId = options?.repoId ?? project.link?.repoId;
+        const ref = options?.branch || project.link?.productionBranch || 'main';
+        const target = options?.target ?? 'production';
+
+        if (repoId !== undefined && repoId !== null) {
+            return this.createDeployment(name, {
+                project: projectId,
+                target,
+                gitSource: {
+                    type: 'github',
+                    ref,
+                    repoId,
+                },
+            });
+        }
+
+        return this.createDeployment(name, {
+            project: projectId,
+            target,
+        });
+    }
+
+    /**
+     * Redeploy an existing Vercel project.
+     * Always deploys from the latest commit of the linked Git branch.
+     */
     async redeployProject(projectId: string, name: string): Promise<VercelDeployment> {
-        const deployments = await this.listDeployments(projectId, 10);
-        if (deployments.length === 0) {
-            throw new Error(`No previous deployments found for project "${name}".`);
-        }
-
-        let sawNeverDeployable = false;
-
-        for (const deployment of deployments as Array<VercelDeployment & { id?: string }>) {
-            const deploymentId = deployment.uid || deployment.id;
-            if (!deploymentId) {
-                continue;
-            }
-
-            try {
-                return await this.createDeployment(name, {
-                    project: projectId,
-                    deploymentId,
-                    withLatestCommit: true,
-                });
-            } catch (error) {
-                const text = error instanceof Error ? error.message : String(error);
-                if (/deployment_can_never_deploy/i.test(text)) {
-                    sawNeverDeployable = true;
-                    continue;
-                }
-                throw error;
-            }
-        }
-
-        if (sawNeverDeployable) {
-            throw new Error(
-                `Vercel cannot redeploy previous deployments for "${name}" (deployment_can_never_deploy). ` +
-                `Push a new commit and deploy from that commit.`
-            );
-        }
-
-        throw new Error(`Unable to determine a deployable previous deployment for project "${name}".`);
+        return this.deployProjectFromGit(projectId, name);
     }
 
     /** Get deployment details. */

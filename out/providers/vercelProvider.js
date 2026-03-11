@@ -2,7 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.vercelProvider = void 0;
 exports.getLatestVercelDeploymentMeta = getLatestVercelDeploymentMeta;
+const child_process_1 = require("child_process");
 const vercelClient_1 = require("../clients/vercelClient");
+const secretStorage_1 = require("../utils/secretStorage");
+const types_1 = require("../utils/types");
 const POLL_INTERVAL_MS = 4000;
 const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 class VercelProviderAdapter {
@@ -19,7 +22,19 @@ class VercelProviderAdapter {
         const gitRepo = project.repoOwner && project.repoName
             ? { type: 'github', repo: `${project.repoOwner}/${project.repoName}` }
             : undefined;
-        await client.createProject(project.name, gitRepo);
+        const created = await client.createProject(project.name, gitRepo);
+        const deployment = await client.deployProjectFromGit(created.id, created.name, {
+            branch: project.branch,
+            target: 'production',
+        });
+        const deploymentId = deployment.uid || deployment.id;
+        if (!deploymentId) {
+            throw new Error('Vercel did not return a deployment ID after creating the project.');
+        }
+        const silentProgress = {
+            report: () => undefined,
+        };
+        await this.waitForDeployment(client, deploymentId, created.name, silentProgress);
     }
     async listProjects() {
         const client = new vercelClient_1.VercelClient();
@@ -47,30 +62,87 @@ class VercelProviderAdapter {
         return lines.join('\n');
     }
     async redeploy(target, context) {
-        const client = new vercelClient_1.VercelClient();
-        this.reportStatus(context, {
-            phase: 'info',
-            message: 'Triggering Vercel redeploy request...',
-        });
-        const deployment = await client.redeployProject(target.id, target.name);
-        const deploymentId = deployment.uid || deployment.id;
-        if (!deploymentId) {
-            throw new Error('Unable to determine Vercel deployment ID after triggering redeploy.');
+        if (!context.projectPath) {
+            throw new Error('Workspace folder is required to run Vercel CLI deploy.');
+        }
+        const rawToken = await secretStorage_1.SecretStorageManager.getInstance().get(types_1.StorageKeys.VERCEL_TOKEN);
+        const token = rawToken?.trim().replace(/^['"]+|['"]+$/g, '');
+        if (!token) {
+            throw new Error('Vercel API token not found.');
         }
         this.reportStatus(context, {
-            phase: 'queued',
-            state: this.getState(deployment),
-            message: `Queued deployment ${deploymentId.slice(0, 8)}. Waiting for Vercel status...`,
-            sourceLabel: this.extractSourceLabel(deployment),
+            phase: 'info',
+            message: 'Starting Vercel CLI deploy...',
+            sourceLabel: '>_ vercel deploy',
         });
-        const completed = await this.waitForDeployment(client, deploymentId, target.name, context.progress, context.onStatus);
-        this.reportStatus(context, {
-            phase: 'ready',
-            state: this.getState(completed),
-            message: 'Finished. Deployment is ready.',
-            sourceLabel: this.extractSourceLabel(completed),
+        return new Promise((resolve, reject) => {
+            const isWin = process.platform === 'win32';
+            const command = `npx --yes vercel@latest deploy --prod --yes --token ${token}`;
+            const child = isWin
+                ? (0, child_process_1.spawn)('cmd.exe', ['/d', '/s', '/c', command], { cwd: context.projectPath, windowsHide: true })
+                : (0, child_process_1.spawn)('npx', ['--yes', 'vercel@latest', 'deploy', '--prod', '--yes', '--token', token], {
+                    cwd: context.projectPath,
+                });
+            let combinedOutput = '';
+            let deploymentUrl;
+            let hasReportedUploading = false;
+            let hasReportedDeploying = false;
+            child.stdout.on('data', (data) => {
+                const text = data.toString();
+                combinedOutput += text;
+                const urlMatch = text.match(/https:\/\/[^\s]+\.vercel\.app/);
+                if (urlMatch) {
+                    deploymentUrl = urlMatch[0].trim();
+                }
+                if (!hasReportedUploading) {
+                    hasReportedUploading = true;
+                    this.reportStatus(context, {
+                        phase: 'uploading',
+                        message: 'Uploading files...',
+                        sourceLabel: '>_ vercel deploy',
+                    });
+                }
+            });
+            child.stderr.on('data', (data) => {
+                const text = data.toString();
+                combinedOutput += text;
+                if (!hasReportedDeploying) {
+                    hasReportedDeploying = true;
+                    this.reportStatus(context, {
+                        phase: 'deploying',
+                        message: 'Building deployment...',
+                        sourceLabel: '>_ vercel deploy',
+                    });
+                }
+            });
+            child.on('close', (code) => {
+                if (code === 0) {
+                    this.reportStatus(context, {
+                        phase: 'ready',
+                        message: 'Deployment ready.',
+                        sourceLabel: '>_ vercel deploy',
+                    });
+                    if (!deploymentUrl) {
+                        const allUrls = combinedOutput.match(/https:\/\/[^\s]+\.vercel\.app/g);
+                        if (allUrls && allUrls.length > 0) {
+                            deploymentUrl = allUrls[allUrls.length - 1];
+                        }
+                    }
+                    resolve({ deploymentUrl });
+                }
+                else {
+                    const compactOutput = combinedOutput.replace(/\r/g, '').trim();
+                    const maxErrorChars = 5000;
+                    const clipped = compactOutput.length > maxErrorChars
+                        ? `...[truncated]\n${compactOutput.slice(compactOutput.length - maxErrorChars)}`
+                        : compactOutput;
+                    reject(new Error(`Vercel CLI exited with code ${code}. Output: ${clipped}`));
+                }
+            });
+            child.on('error', (err) => {
+                reject(new Error(`Failed to start Vercel CLI: ${err.message}`));
+            });
         });
-        return { deploymentUrl: completed.url ? `https://${completed.url}` : undefined };
     }
     async waitForDeployment(client, deploymentId, projectName, progress, onStatus) {
         const startedAt = Date.now();
@@ -102,13 +174,25 @@ class VercelProviderAdapter {
             }
             catch (error) {
                 const text = error instanceof Error ? error.message : String(error);
-                if (Date.now() - startedAt < 30000 && /404|not found/i.test(text)) {
+                const elapsedMs = Date.now() - startedAt;
+                if (elapsedMs < 30000 && /404|not found/i.test(text)) {
                     const message = `Waiting for deployment details... (${this.formatElapsed(startedAt)})`;
                     progress.report({ message });
                     onStatus?.({
                         phase: 'queued',
                         state: 'QUEUED',
                         message: 'Waiting for deployment details...',
+                        timestamp: Date.now(),
+                    });
+                    await this.sleep(POLL_INTERVAL_MS);
+                    continue;
+                }
+                if (this.isTransientPollingError(text)) {
+                    const message = `Temporary Vercel API issue. Retrying... (${this.formatElapsed(startedAt)})`;
+                    progress.report({ message });
+                    onStatus?.({
+                        phase: 'info',
+                        message: 'Temporary Vercel API/network issue. Retrying status check...',
                         timestamp: Date.now(),
                     });
                     await this.sleep(POLL_INTERVAL_MS);
@@ -320,6 +404,9 @@ class VercelProviderAdapter {
             }
         }
         return null;
+    }
+    isTransientPollingError(message) {
+        return /(fetch failed|network|timed out|timeout|econnreset|enotfound|eai_again|socket|und_err|429|503|504)/i.test(message);
     }
     formatElapsed(startedAt) {
         const totalSeconds = Math.floor((Date.now() - startedAt) / 1000);

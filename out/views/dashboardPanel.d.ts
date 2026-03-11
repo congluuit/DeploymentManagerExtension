@@ -36,6 +36,8 @@ export declare class DashboardPanel {
     private matchesWorkspaceOnVercel;
     private matchesWorkspaceOnCoolify;
     private matchesWorkspaceOnNetlify;
+    private isCoolifyAppDeployed;
+    private isNetlifySiteDeployed;
     private normalizeRepoIdentifier;
     private getLatestVercelDeployment;
     private getLatestNetlifyDeploy;

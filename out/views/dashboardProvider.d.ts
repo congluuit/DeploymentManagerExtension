@@ -56,5 +56,8 @@ export declare class DashboardProvider implements vscode.TreeDataProvider<Dashbo
     private getLatestVercelDeployment;
     private getVercelState;
     private hasVercelBuildLogs;
+    private isCoolifyAppDeployed;
+    private isNetlifySiteDeployed;
+    private normalizePublicUrl;
 }
 //# sourceMappingURL=dashboardProvider.d.ts.map

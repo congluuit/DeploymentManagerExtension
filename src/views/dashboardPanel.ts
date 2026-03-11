@@ -64,8 +64,7 @@ interface DashboardWebviewMessage {
     | 'visitResourceSite'
     | 'importResourceEnv'
     | 'openLogs'
-    | 'redeployResult'
-    | 'redeployProgress';
+    | 'redeployResult';
     requestId?: string;
     provider?: string;
     projectId?: string;
@@ -121,7 +120,7 @@ export class DashboardPanel {
             activeColumn ?? vscode.ViewColumn.One,
             {
                 enableScripts: true,
-                retainContextWhenHidden: true,
+                retainContextWhenHidden: false,
             }
         );
 
@@ -278,19 +277,6 @@ export class DashboardPanel {
                         },
                         notify: false,
                         refreshDashboard: false,
-                        onStatus: (update) => {
-                            this.panel.webview.postMessage({
-                                command: 'redeployProgress',
-                                requestId: message.requestId,
-                                resourceKey: message.resourceKey,
-                                phase: update.phase,
-                                state: update.state,
-                                messageText: update.message,
-                                sourceLabel: update.sourceLabel,
-                                uploaded: update.fileProgress?.uploaded,
-                                total: update.fileProgress?.total,
-                            });
-                        },
                     });
 
                     this.panel.webview.postMessage({
@@ -580,7 +566,9 @@ export class DashboardPanel {
 
                 if (projectInfo) {
                     const matched = await coolify.findApplicationByNameOrRepo(projectInfo.name, projectInfo.repoUrl);
-                    projectExistsOnCoolify = matched !== null;
+                    if (matched) {
+                        projectExistsOnCoolify = this.isCoolifyAppDeployed(matched);
+                    }
                 }
 
                 activity.push(
@@ -607,7 +595,10 @@ export class DashboardPanel {
 
                 if (projectInfo) {
                     const matched = await netlify.findSiteByNameOrRepo(projectInfo.name, projectInfo.repoUrl);
-                    projectExistsOnNetlify = matched !== null;
+
+                    if (matched) {
+                        projectExistsOnNetlify = this.isNetlifySiteDeployed(matched);
+                    }
 
                     if (matched) {
                         const deploys = await netlify.listSiteDeploys(matched.id, 8);
@@ -977,8 +968,7 @@ export class DashboardPanel {
             return false;
         }
 
-        const state = this.getVercelState(latest);
-        if (state === 'ready') {
+        if (this.normalizePublicUrl(latest.url ? `https://${latest.url}` : null)) {
             return true;
         }
 
@@ -1046,7 +1036,7 @@ export class DashboardPanel {
             const sameName = app.name.trim().toLowerCase() === workspaceName;
             const appRepo = this.normalizeRepoIdentifier(app.git_repository);
             const sameRepo = !!workspaceRepo && !!appRepo && workspaceRepo === appRepo;
-            return sameName || sameRepo;
+            return (sameName || sameRepo) && this.isCoolifyAppDeployed(app);
         });
     }
 
@@ -1066,8 +1056,29 @@ export class DashboardPanel {
                 const normalized = this.normalizeRepoIdentifier(candidate);
                 return !!workspaceRepo && !!normalized && workspaceRepo === normalized;
             });
-            return sameName || sameRepo;
+            return (sameName || sameRepo) && this.isNetlifySiteDeployed(site);
         });
+    }
+
+    private isCoolifyAppDeployed(app: CoolifyApplication | null): boolean {
+        return !!this.normalizePublicUrl(app?.fqdn);
+    }
+
+    private isNetlifySiteDeployed(site: NetlifySite | null): boolean {
+        if (!site) {
+            return false;
+        }
+
+        const candidate =
+            site.ssl_url ||
+            site.url ||
+            site.deploy_url ||
+            site.published_deploy?.deploy_ssl_url ||
+            site.published_deploy?.ssl_url ||
+            site.published_deploy?.deploy_url ||
+            site.published_deploy?.url;
+
+        return !!this.normalizePublicUrl(candidate);
     }
 
     private normalizeRepoIdentifier(value: string | null | undefined): string | null {
@@ -1197,8 +1208,8 @@ export class DashboardPanel {
                     <strong class="resource-title">${DashboardPanel.escapeHtml(item.projectName)}</strong>
                     <small class="resource-subtitle">${DashboardPanel.escapeHtml(item.detailLabel)}</small>
                     ${item.statusDetailLabel
-                        ? `<small id="resource-status-detail-${DashboardPanel.escapeHtml(item.key)}" class="resource-subtitle">${DashboardPanel.escapeHtml(item.statusDetailLabel)}</small>`
-                        : `<small id="resource-status-detail-${DashboardPanel.escapeHtml(item.key)}" class="resource-subtitle"></small>`}
+                ? `<small id="resource-status-detail-${DashboardPanel.escapeHtml(item.key)}" class="resource-subtitle">${DashboardPanel.escapeHtml(item.statusDetailLabel)}</small>`
+                : `<small id="resource-status-detail-${DashboardPanel.escapeHtml(item.key)}" class="resource-subtitle"></small>`}
                     <span class="git-pill ${stateClass}" id="resource-pill-${DashboardPanel.escapeHtml(item.key)}">${DashboardPanel.escapeHtml(item.deploymentStatusLabel)}</span>
                 </div>
                 <div class="resource-actions">
@@ -1243,6 +1254,10 @@ export class DashboardPanel {
                 ${this.getManagedProviderSectionHtml('Netlify', data)}
                 ${this.getManagedProviderSectionHtml('Coolify', data)}
             </div>
+            <section id="redeploy-log-shell" class="redeploy-log-shell" aria-label="Deploy log">
+                <div id="redeploy-log-title" class="redeploy-log-title">Deploy log</div>
+                <pre id="redeploy-log-view" class="redeploy-log-view" aria-live="polite"></pre>
+            </section>
             <div class="footer-note">Last updated: ${DashboardPanel.escapeHtml(data.generatedAt)}</div>
         `;
     }
@@ -1425,7 +1440,7 @@ export class DashboardPanel {
             <head>
                 <meta charset="UTF-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' 'unsafe-inline';" />
                 <title>Deployment Manager Dashboard</title>
                 <style>
                     :root {
@@ -1745,7 +1760,6 @@ export class DashboardPanel {
 
                     .provider-resource-section.is-loading {
                         opacity: 0.55;
-                        pointer-events: none;
                     }
 
                     .provider-section-head {
@@ -1823,6 +1837,7 @@ export class DashboardPanel {
                         display: grid;
                         gap: 4px;
                         justify-items: end;
+                        max-width: 260px;
                     }
 
                     .resource-btn {
@@ -1865,6 +1880,13 @@ export class DashboardPanel {
 
                     .redeploy-status {
                         min-height: 14px;
+                        display: block;
+                        max-width: 260px;
+                        text-align: right;
+                        font-size: 11px;
+                        line-height: 1.25;
+                        color: #9eacd6;
+                        word-break: break-word;
                     }
 
                     .redeploy-status.ok {
@@ -1875,13 +1897,58 @@ export class DashboardPanel {
                         color: #ffabab;
                     }
 
+                    .redeploy-log-shell {
+                        display: none;
+                        margin-top: 12px;
+                        border: 1px solid rgba(126, 144, 238, 0.35);
+                        border-radius: 10px;
+                        background: rgba(9, 13, 33, 0.82);
+                        overflow: hidden;
+                    }
+
+                    .redeploy-log-shell.is-visible {
+                        display: block;
+                    }
+
+                    .redeploy-log-title {
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: #b9c7f4;
+                        padding: 8px 10px;
+                        border-bottom: 1px solid rgba(126, 144, 238, 0.2);
+                        background: rgba(126, 144, 238, 0.08);
+                    }
+
+                    .redeploy-log-view {
+                        display: block;
+                        margin: 0;
+                        max-height: 170px;
+                        overflow: auto;
+                        text-align: left;
+                        color: #d9e3ff;
+                        padding: 8px 10px;
+                        font-size: 10px;
+                        line-height: 1.32;
+                        white-space: pre-wrap;
+                        word-break: break-word;
+                        font-family: Consolas, 'Courier New', monospace;
+                    }
+
+                    .redeploy-log-view::-webkit-scrollbar {
+                        width: 8px;
+                    }
+
+                    .redeploy-log-view::-webkit-scrollbar-thumb {
+                        background: rgba(126, 144, 238, 0.45);
+                        border-radius: 999px;
+                    }
+
                     #managed-resources-body {
                         position: relative;
                     }
 
                     #managed-resources-body.is-loading {
                         opacity: 0.55;
-                        pointer-events: none;
                     }
 
                     #managed-resources-body.is-loading::after {
@@ -1897,6 +1964,7 @@ export class DashboardPanel {
                         border-top-color: #7b96ff;
                         border-radius: 999px;
                         animation: spin 0.8s linear infinite;
+                        pointer-events: none;
                     }
 
                     .check-git-status {
@@ -1919,6 +1987,37 @@ export class DashboardPanel {
                     .footer-note {
                         margin-top: 12px;
                         color: #8a9aca;
+                        font-size: 11px;
+                    }
+
+                    .runtime-error-banner {
+                        position: sticky;
+                        top: 0;
+                        z-index: 30;
+                        margin-bottom: 10px;
+                        border: 1px solid rgba(255, 138, 138, 0.45);
+                        border-radius: 10px;
+                        background: linear-gradient(180deg, rgba(78, 19, 19, 0.96), rgba(42, 14, 14, 0.96));
+                        color: #ffd6d6;
+                        padding: 10px 12px;
+                        font-size: 12px;
+                        line-height: 1.35;
+                        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+                    }
+
+                    .runtime-error-banner strong {
+                        display: block;
+                        margin-bottom: 4px;
+                        color: #ffe8e8;
+                    }
+
+                    .runtime-error-banner code {
+                        display: block;
+                        margin-top: 4px;
+                        white-space: pre-wrap;
+                        word-break: break-word;
+                        color: #ffdede;
+                        font-family: Consolas, 'Courier New', monospace;
                         font-size: 11px;
                     }
 
@@ -2007,378 +2106,221 @@ export class DashboardPanel {
                 </main>
 
                 <script nonce="${nonce}">
-                    const vscode = acquireVsCodeApi();
-                    const pendingRequests = new Map();
-
-                    function send(command, payload = {}) {
-                        vscode.postMessage({ command, ...payload });
-                    }
-
-                    function sendWithReply(command, payload = {}, expectedCommand = 'redeployResult') {
-                        const requestId = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
-                        return new Promise((resolve) => {
-                            pendingRequests.set(requestId, { resolve, expectedCommand });
-                            send(command, { ...payload, requestId });
-                        });
-                    }
-
-                    function setResourcePill(resourceKey, label, tone) {
-                        if (!resourceKey) {
-                            return;
-                        }
-                        const pill = document.getElementById('resource-pill-' + resourceKey);
-                        if (!pill) {
-                            return;
-                        }
-                        pill.textContent = label;
-                        pill.classList.remove('git-pill-ok', 'git-pill-warning', 'git-pill-error');
-                        if (tone === 'ok') {
-                            pill.classList.add('git-pill-ok');
-                            return;
-                        }
-                        if (tone === 'error') {
-                            pill.classList.add('git-pill-error');
-                            return;
-                        }
-                        pill.classList.add('git-pill-warning');
-                    }
-
-                    function setResourceDetail(resourceKey, detail) {
-                        if (!resourceKey) {
-                            return;
-                        }
-                        const node = document.getElementById('resource-status-detail-' + resourceKey);
-                        if (!node) {
-                            return;
-                        }
-                        node.textContent = detail || '';
-                    }
-
-                    function applyRedeployProgress(message) {
-                        const resourceKey = message.resourceKey || '';
-                        if (!resourceKey) {
-                            return;
-                        }
-                        const statusNode = document.getElementById('redeploy-status-' + resourceKey);
-                        if (statusNode) {
-                            statusNode.classList.remove('ok', 'error');
-                            const source = message.sourceLabel ? ' • ' + message.sourceLabel : '';
-                            statusNode.textContent = (message.messageText || 'In progress...') + source;
-                        }
-
-                        const phase = String(message.phase || '').toLowerCase();
-                        const state = String(message.state || '').toLowerCase();
-                        if (phase === 'ready' || state === 'ready') {
-                            setResourcePill(resourceKey, 'Ready', 'ok');
-                            setResourceDetail(resourceKey, 'Updated just now' + (message.sourceLabel ? ' • ' + message.sourceLabel : ''));
-                            return;
-                        }
-                        if (phase === 'failed' || state === 'error' || state === 'canceled') {
-                            setResourcePill(resourceKey, state === 'canceled' ? 'Canceled' : 'Failed', 'error');
-                            return;
-                        }
-                        if (phase === 'uploading') {
-                            setResourcePill(resourceKey, 'Uploading', 'warning');
-                            return;
-                        }
-                        if (phase === 'queued' || state === 'queued') {
-                            setResourcePill(resourceKey, 'Queued', 'warning');
-                            return;
-                        }
-                        if (phase === 'deploying' || state === 'building' || state === 'initializing') {
-                            setResourcePill(resourceKey, 'Deploying', 'warning');
-                        }
-                    }
-
-                    window.addEventListener('message', (event) => {
-                        const message = event.data;
-                        if (!message) {
-                            return;
-                        }
-
-                        if (message.command === 'redeployProgress') {
-                            applyRedeployProgress(message);
-                            return;
-                        }
-
-                        if (!message.requestId) {
-                            return;
-                        }
-
-                        const pending = pendingRequests.get(message.requestId);
-                        if (!pending || pending.expectedCommand !== message.command) {
-                            return;
-                        }
-
-                        pendingRequests.delete(message.requestId);
-                        pending.resolve(message);
-                    });
-
-                    const refreshButton = document.getElementById('btn-refresh');
-                    if (refreshButton) {
-                        refreshButton.addEventListener('click', () => send('refresh'));
-                    }
-
-                    const checkGitButton = document.getElementById('btn-check-git');
-                    if (checkGitButton) {
-                        checkGitButton.addEventListener('click', async () => {
-                            const resourcesBody = document.getElementById('managed-resources-body');
-                            const checkStatus = document.getElementById('check-git-status');
-                            const latestCommitLabel = document.getElementById('latest-commit-label');
-                            const originalLabel = checkGitButton.textContent || 'Check Git Updates';
-
-                            checkGitButton.disabled = true;
-                            checkGitButton.textContent = 'Checking...';
-                            if (checkStatus) {
-                                checkStatus.classList.remove('error');
-                                checkStatus.textContent = '';
+                    (function() {
+                        const globalScope = (typeof globalThis !== 'undefined' ? globalThis : window) as any;
+                        const vscodeApi = (function() {
+                            const cacheKey = '__deploymentManagerApi';
+                            if (globalScope[cacheKey]) {
+                                return globalScope[cacheKey];
                             }
-                            if (resourcesBody) {
-                                resourcesBody.classList.add('is-loading');
-                            }
-
-                            const result = await sendWithReply('checkGitUpdates', {}, 'checkGitUpdatesResult');
-
-                            checkGitButton.disabled = false;
-                            checkGitButton.textContent = originalLabel;
-                            if (resourcesBody) {
-                                resourcesBody.classList.remove('is-loading');
-                            }
-
-                            if (result.success && resourcesBody && typeof result.sectionBodyHtml === 'string') {
-                                resourcesBody.innerHTML = result.sectionBodyHtml;
-                                if (latestCommitLabel && typeof result.latestCommitLabel === 'string') {
-                                    latestCommitLabel.textContent = 'Latest commit: ' + result.latestCommitLabel;
+                            if (typeof acquireVsCodeApi === 'function') {
+                                try {
+                                    const api = acquireVsCodeApi();
+                                    globalScope[cacheKey] = api;
+                                    return api;
+                                } catch (e) {
+                                    console.warn('[dashboard] acquire failed', e);
                                 }
-                                if (checkStatus) {
-                                    checkStatus.classList.remove('error');
-                                    checkStatus.textContent = 'Git status refreshed.';
+                            }
+                            return null;
+                        })();
+
+                        function showRuntimeErrorBanner(message) {
+                            try {
+                                console.error('[dashboard] error banner:', message);
+                                const text = String(message || 'Unknown error');
+                                const root = document.querySelector('main.shell') || document.body;
+                                if (!root) return;
+                                
+                                const existing = document.getElementById('runtime-error-banner');
+                                if (existing) {
+                                    const code = existing.querySelector('code');
+                                    if (code) code.textContent = text;
+                                    return;
                                 }
-                                bindResourceButtons();
+
+                                const banner = document.createElement('section');
+                                banner.id = 'runtime-error-banner';
+                                banner.className = 'runtime-error-banner';
+                                banner.innerHTML = '<strong>Dashboard script error</strong><div>Interactions may be degraded.</div><code></code>';
+                                const code = banner.querySelector('code');
+                                if (code) code.textContent = text;
+                                root.prepend(banner);
+                            } catch (e) {
+                                console.error('[dashboard] banner failed', e);
+                            }
+                        }
+
+                        function send(command, payload = {}) {
+                            console.log('[dashboard] dispatch:', command, payload);
+                            if (!vscodeApi) {
+                                showRuntimeErrorBanner('VS Code API not available.');
                                 return;
                             }
+                            try {
+                                vscodeApi.postMessage({ command, ...payload });
+                            } catch (e) {
+                                showRuntimeErrorBanner('Message failed: ' + String(e));
+                            }
+                        }
 
-                            if (checkStatus) {
-                                checkStatus.classList.add('error');
-                                checkStatus.textContent = 'Failed: ' + (result.error || 'Unable to refresh git status.');
+                        const pendingRequests = new Map();
+                        function sendWithReply(command, payload = {}, expectedCommand = 'redeployResult') {
+                            const requestId = Date.now() + '-' + Math.random().toString(36).substring(2);
+                            return new Promise((resolve) => {
+                                const timeout = setTimeout(() => {
+                                    pendingRequests.delete(requestId);
+                                    resolve({ success: false, error: 'Timed out' });
+                                }, 30000);
+                                pendingRequests.set(requestId, { resolve, expectedCommand, timeout });
+                                send(command, { ...payload, requestId });
+                            });
+                        }
+
+                        function bindClick(id, command) {
+                            const el = document.getElementById(id);
+                            if (el) {
+                                el.addEventListener('click', () => {
+                                    console.log('[dashboard] click:', id);
+                                    send(command);
+                                });
+                            }
+                        }
+
+                        window.addEventListener('message', (event) => {
+                            const msg = event.data;
+                            if (msg && msg.requestId) {
+                                const pending = pendingRequests.get(msg.requestId);
+                                if (pending && pending.expectedCommand === msg.command) {
+                                    pendingRequests.delete(msg.requestId);
+                                    clearTimeout(pending.timeout);
+                                    pending.resolve(msg);
+                                }
                             }
                         });
-                    }
 
-                    const connectVercelButton = document.getElementById('btn-connect-vercel');
-                    if (connectVercelButton) {
-                        connectVercelButton.addEventListener('click', () => send('connectVercel'));
-                    }
+                        window.addEventListener('error', (e) => {
+                            showRuntimeErrorBanner(e.error || e.message);
+                        });
 
-                    const connectCoolifyButton = document.getElementById('btn-connect-coolify');
-                    if (connectCoolifyButton) {
-                        connectCoolifyButton.addEventListener('click', () => send('connectCoolify'));
-                    }
-
-                    const connectNetlifyButton = document.getElementById('btn-connect-netlify');
-                    if (connectNetlifyButton) {
-                        connectNetlifyButton.addEventListener('click', () => send('connectNetlify'));
-                    }
-
-                    const deployButton = document.getElementById('btn-deploy');
-                    if (deployButton) {
-                        deployButton.addEventListener('click', () => send('deployProject'));
-                    }
-
-                    const openLogsButton = document.getElementById('btn-open-logs');
-                    if (openLogsButton) {
-                        openLogsButton.addEventListener('click', () => send('openLogs'));
-                    }
-
-                    function bindResourceButtons() {
-                        const providerRefreshButtons = document.querySelectorAll('[data-action="refresh-provider-resources"]');
-                        for (const refreshButton of providerRefreshButtons) {
-                            if (refreshButton.dataset.bound === 'true') {
-                                continue;
-                            }
-                            refreshButton.dataset.bound = 'true';
-                            refreshButton.addEventListener('click', async () => {
-                                if (refreshButton.disabled) {
-                                    return;
-                                }
-
-                                const provider = refreshButton.getAttribute('data-provider') || '';
-                                const sectionNode = document.querySelector('[data-provider-section="' + provider + '"]');
-                                const checkStatus = document.getElementById('check-git-status');
-                                const baseLabel = refreshButton.textContent || '?';
-
-                                refreshButton.disabled = true;
-                                refreshButton.textContent = '...';
-                                if (sectionNode) {
-                                    sectionNode.classList.add('is-loading');
-                                }
-
-                                const result = await sendWithReply(
-                                    'refreshProviderResources',
-                                    { provider },
-                                    'refreshProviderResourcesResult'
-                                );
-
-                                refreshButton.disabled = false;
-                                refreshButton.textContent = baseLabel;
-
-                                if (sectionNode) {
-                                    sectionNode.classList.remove('is-loading');
-                                }
-
-                                if (result.success && typeof result.providerSectionHtml === 'string' && sectionNode) {
-                                    sectionNode.outerHTML = result.providerSectionHtml;
-                                    if (checkStatus) {
-                                        checkStatus.classList.remove('error');
-                                        checkStatus.textContent = provider + ' section refreshed.';
-                                    }
-                                    bindResourceButtons();
-                                    return;
-                                }
-
-                                if (checkStatus) {
-                                    checkStatus.classList.add('error');
-                                    checkStatus.textContent = 'Failed: ' + (result.error || 'Unable to refresh section.');
-                                }
-                            });
-                        }
-
-                        const logButtons = document.querySelectorAll('[data-action="open-logs"]');
-                        for (const logButton of logButtons) {
-                            if (logButton.dataset.bound === 'true') {
-                                continue;
-                            }
-                            logButton.dataset.bound = 'true';
-                            logButton.addEventListener('click', () => {
-                                send('openLogs', {
-                                    provider: logButton.getAttribute('data-provider') || undefined,
-                                    projectId: logButton.getAttribute('data-project-id') || undefined,
-                                    projectName: logButton.getAttribute('data-project-name') || undefined,
-                                });
-                            });
-                        }
-
-                        const visitButtons = document.querySelectorAll('[data-action="visit-site"]');
-                        for (const visitButton of visitButtons) {
-                            if (visitButton.dataset.bound === 'true') {
-                                continue;
-                            }
-                            visitButton.dataset.bound = 'true';
-                            visitButton.addEventListener('click', () => {
-                                send('visitResourceSite', {
-                                    provider: visitButton.getAttribute('data-provider') || undefined,
-                                    projectId: visitButton.getAttribute('data-project-id') || undefined,
-                                    projectName: visitButton.getAttribute('data-project-name') || undefined,
-                                    siteUrl: visitButton.getAttribute('data-site-url') || undefined,
-                                });
-                            });
-                        }
-
-                        const importButtons = document.querySelectorAll('[data-action="import-env"]');
-                        for (const importButton of importButtons) {
-                            if (importButton.dataset.bound === 'true') {
-                                continue;
-                            }
-                            importButton.dataset.bound = 'true';
-                            importButton.addEventListener('click', async () => {
-                                if (importButton.disabled) {
-                                    return;
-                                }
-
-                                const provider = importButton.getAttribute('data-provider') || '';
-                                const projectId = importButton.getAttribute('data-project-id') || '';
-                                const projectName = importButton.getAttribute('data-project-name') || '';
-                                const resourceKey = importButton.getAttribute('data-resource-key') || '';
-                                const statusNode = document.getElementById('import-status-' + resourceKey);
-
-                                importButton.disabled = true;
-                                const baseLabel = importButton.textContent || 'Import .env';
-                                importButton.textContent = 'Importing...';
-                                if (statusNode) {
-                                    statusNode.classList.remove('ok', 'error');
-                                    statusNode.textContent = '';
-                                }
-
-                                const result = await sendWithReply(
-                                    'importResourceEnv',
-                                    { provider, projectId, projectName },
-                                    'importEnvResult'
-                                );
-
-                                importButton.disabled = false;
-                                importButton.textContent = baseLabel;
-
-                                if (statusNode) {
-                                    if (result.success) {
-                                        statusNode.classList.remove('error');
-                                        statusNode.classList.add('ok');
-                                        const count = typeof result.imported === 'number' ? result.imported : 0;
-                                        statusNode.textContent = 'Imported ' + count + ' vars';
-                                    } else {
-                                        statusNode.classList.remove('ok');
-                                        statusNode.classList.add('error');
-                                        statusNode.textContent = 'Failed: ' + (result.error || 'Unknown error');
-                                    }
-                                }
-                            });
-                        }
-
-                        const redeployButtons = document.querySelectorAll('[data-action="redeploy-resource"]');
-                        for (const redeployButton of redeployButtons) {
-                            if (redeployButton.dataset.bound === 'true') {
-                                continue;
-                            }
-                            redeployButton.dataset.bound = 'true';
-                            redeployButton.addEventListener('click', async () => {
-                                if (redeployButton.disabled) {
-                                    return;
-                                }
-
-                                const provider = redeployButton.getAttribute('data-provider') || '';
-                                const projectId = redeployButton.getAttribute('data-project-id') || '';
-                                const projectName = redeployButton.getAttribute('data-project-name') || '';
-                                const resourceKey = redeployButton.getAttribute('data-resource-key') || '';
-                                const statusNode = document.getElementById('redeploy-status-' + resourceKey);
-
-                                redeployButton.disabled = true;
-                                const baseLabel = redeployButton.textContent || 'Redeploy';
-                                redeployButton.textContent = 'Redeploying...';
-                                if (statusNode) {
-                                    statusNode.classList.remove('ok', 'error');
-                                    statusNode.textContent = 'In progress...';
-                                }
-
-                                const result = await sendWithReply(
-                                    'redeployResource',
-                                    { provider, projectId, projectName, resourceKey },
-                                    'redeployResult'
-                                );
-
-                                redeployButton.disabled = false;
-                                redeployButton.textContent = baseLabel;
-
-                                if (statusNode) {
-                                    if (result.success) {
-                                        statusNode.classList.remove('error');
-                                        statusNode.classList.add('ok');
-                                        statusNode.textContent = 'Success';
-                                        setResourcePill(resourceKey, 'Ready', 'ok');
-                                        const detailNode = document.getElementById('resource-status-detail-' + resourceKey);
-                                        if (detailNode && detailNode.textContent.trim().length === 0) {
-                                            detailNode.textContent = 'Updated just now';
+                        function bindResourceButtons() {
+                            const buttons = document.querySelectorAll('[data-action]');
+                            console.log('[dashboard] binding', buttons.length, 'action buttons');
+                            buttons.forEach(btn => {
+                                if ((btn as HTMLElement).dataset.bound) return;
+                                (btn as HTMLElement).dataset.bound = 'true';
+                                
+                                btn.addEventListener('click', async (e) => {
+                                    const action = (btn as HTMLElement).dataset.action;
+                                    console.log('[dashboard] action click:', action);
+                                    
+                                    if (action === 'redeploy-resource') {
+                                        const provider = btn.getAttribute('data-provider') || '';
+                                        const projectId = btn.getAttribute('data-project-id') || '';
+                                        const projectName = btn.getAttribute('data-project-name') || '';
+                                        const resourceKey = btn.getAttribute('data-resource-key') || '';
+                                        
+                                        const baseLabel = btn.textContent;
+                                        btn.textContent = '...';
+                                        (btn as HTMLButtonElement).disabled = true;
+                                        
+                                        const result = await sendWithReply('redeployResource', { provider, projectId, projectName, resourceKey }, 'redeployResult');
+                                        
+                                        (btn as HTMLButtonElement).disabled = false;
+                                        btn.textContent = baseLabel;
+                                        
+                                        if (result.success) {
+                                           const statusEl = document.getElementById('redeploy-status-' + resourceKey);
+                                           if (statusEl) statusEl.textContent = 'Ready';
                                         }
-                                    } else {
-                                        statusNode.classList.remove('ok');
-                                        statusNode.classList.add('error');
-                                        statusNode.textContent = 'Failed: ' + (result.error || 'Unknown error');
-                                        setResourcePill(resourceKey, 'Failed', 'error');
+                                    } else if (action === 'open-logs') {
+                                        send('openLogs', {
+                                            provider: btn.getAttribute('data-provider'),
+                                            projectId: btn.getAttribute('data-project-id'),
+                                            projectName: btn.getAttribute('data-project-name')
+                                        });
+                                    } else if (action === 'visit-site') {
+                                        send('visitResourceSite', {
+                                            provider: btn.getAttribute('data-provider'),
+                                            projectId: btn.getAttribute('data-project-id'),
+                                            siteUrl: btn.getAttribute('data-site-url')
+                                        });
+                                    } else if (action === 'import-env') {
+                                        const resourceKey = btn.getAttribute('data-resource-key') || '';
+                                        const baseLabel = btn.textContent;
+                                        btn.textContent = '...';
+                                        (btn as HTMLButtonElement).disabled = true;
+                                        
+                                        const result = await sendWithReply('importResourceEnv', {
+                                            provider: btn.getAttribute('data-provider'),
+                                            projectId: btn.getAttribute('data-project-id')
+                                        }, 'importEnvResult');
+                                        
+                                        (btn as HTMLButtonElement).disabled = false;
+                                        btn.textContent = baseLabel;
+                                        
+                                        const statusEl = document.getElementById('import-status-' + resourceKey);
+                                        if (statusEl) statusEl.textContent = result.success ? 'Imported' : 'Failed';
+                                    } else if (action === 'refresh-provider-resources') {
+                                        const provider = btn.getAttribute('data-provider') || '';
+                                        const baseLabel = btn.textContent;
+                                        btn.textContent = '...';
+                                        (btn as HTMLButtonElement).disabled = true;
+                                        
+                                        const result = await sendWithReply('refreshProviderResources', { provider }, 'refreshProviderResourcesResult');
+                                        
+                                        (btn as HTMLButtonElement).disabled = false;
+                                        btn.textContent = baseLabel;
+                                        
+                                        if (result.success && result.providerSectionHtml) {
+                                            const section = document.querySelector('[data-provider-section="' + provider + '"]');
+                                            if (section) {
+                                                section.outerHTML = result.providerSectionHtml;
+                                                bindResourceButtons();
+                                            }
+                                        }
                                     }
-                                }
+                                });
                             });
                         }
-                    }
 
-                    bindResourceButtons();
+                        // Initialize
+                        try {
+                            bindClick('btn-refresh', 'refresh');
+                            bindClick('btn-connect-vercel', 'connectVercel');
+                            bindClick('btn-connect-coolify', 'connectCoolify');
+                            bindClick('btn-connect-netlify', 'connectNetlify');
+                            bindClick('btn-deploy', 'deployProject');
+                            bindClick('btn-open-logs', 'openLogs');
+                            
+                            const checkGitBtn = document.getElementById('btn-check-git');
+                            if (checkGitBtn) {
+                                checkGitBtn.addEventListener('click', async () => {
+                                    const original = checkGitBtn.textContent;
+                                    checkGitBtn.textContent = '...';
+                                    (checkGitBtn as HTMLButtonElement).disabled = true;
+                                    
+                                    const res = await sendWithReply('checkGitUpdates', {}, 'checkGitUpdatesResult');
+                                    
+                                    (checkGitBtn as HTMLButtonElement).disabled = false;
+                                    checkGitBtn.textContent = original;
+                                    
+                                    if (res.success && res.sectionBodyHtml) {
+                                        const body = document.getElementById('managed-resources-body');
+                                        if (body) {
+                                            body.innerHTML = res.sectionBodyHtml;
+                                            bindResourceButtons();
+                                        }
+                                    }
+                                });
+                            }
+
+                            bindResourceButtons();
+                            console.log('[dashboard] initialization complete');
+                        } catch (e) {
+                            showRuntimeErrorBanner('Initialization failed: ' + e.message);
+                        }
+                    })();
                 </script>
             </body>
             </html>
@@ -2439,7 +2381,7 @@ export class DashboardPanel {
             <head>
                 <meta charset="UTF-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' 'unsafe-inline';" />
                 <title>Dashboard Error</title>
                 <style>
                     body {
@@ -2485,7 +2427,9 @@ export class DashboardPanel {
                     <button id="btn-refresh" type="button">Retry</button>
                 </div>
                 <script nonce="${nonce}">
-                    const vscode = acquireVsCodeApi();
+                    const vscode = typeof acquireVsCodeApi === 'function'
+                        ? acquireVsCodeApi()
+                        : { postMessage: (...args) => console.warn('[dashboard:error] postMessage fallback', args) };
                     document.getElementById('btn-refresh')?.addEventListener('click', () => {
                         vscode.postMessage({ command: 'refresh' });
                     });

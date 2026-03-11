@@ -164,7 +164,9 @@ class DashboardProvider {
                     this.coolifyApps = await coolify.listApplications();
                     if (this.projectInfo) {
                         const match = await coolify.findApplicationByNameOrRepo(this.projectInfo.name, this.projectInfo.repoUrl);
-                        this.projectExistsOnCoolify = match !== null;
+                        if (match) {
+                            this.projectExistsOnCoolify = this.isCoolifyAppDeployed(match);
+                        }
                     }
                 }
                 catch {
@@ -177,7 +179,9 @@ class DashboardProvider {
                     this.netlifySites = await netlify.listSites();
                     if (this.projectInfo) {
                         const match = await netlify.findSiteByNameOrRepo(this.projectInfo.name, this.projectInfo.repoUrl);
-                        this.projectExistsOnNetlify = match !== null;
+                        if (match) {
+                            this.projectExistsOnNetlify = this.isNetlifySiteDeployed(match);
+                        }
                     }
                 }
                 catch {
@@ -364,8 +368,7 @@ class DashboardProvider {
         if (!latest) {
             return false;
         }
-        const state = this.getVercelState(latest);
-        if (state === 'ready') {
+        if (this.normalizePublicUrl(latest.url ? `https://${latest.url}` : null)) {
             return true;
         }
         return this.hasVercelBuildLogs(vercel, latest);
@@ -424,6 +427,38 @@ class DashboardProvider {
         catch {
             return false;
         }
+    }
+    isCoolifyAppDeployed(app) {
+        return !!this.normalizePublicUrl(app?.fqdn);
+    }
+    isNetlifySiteDeployed(site) {
+        if (!site) {
+            return false;
+        }
+        const candidate = site.ssl_url ||
+            site.url ||
+            site.deploy_url ||
+            site.published_deploy?.deploy_ssl_url ||
+            site.published_deploy?.ssl_url ||
+            site.published_deploy?.deploy_url ||
+            site.published_deploy?.url;
+        return !!this.normalizePublicUrl(candidate);
+    }
+    normalizePublicUrl(value) {
+        if (!value) {
+            return null;
+        }
+        const first = value.split(',')[0]?.trim();
+        if (!first) {
+            return null;
+        }
+        if (/^https?:\/\//i.test(first)) {
+            return first;
+        }
+        if (first.startsWith('//')) {
+            return `https:${first}`;
+        }
+        return `https://${first}`;
     }
 }
 exports.DashboardProvider = DashboardProvider;

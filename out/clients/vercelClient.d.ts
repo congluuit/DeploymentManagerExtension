@@ -39,7 +39,19 @@ export declare class VercelClient {
         withLatestCommit?: boolean;
         target?: 'production' | 'staging' | string;
     }): Promise<VercelDeployment>;
-    /** Redeploy an existing Vercel project by cloning its latest eligible deployment. */
+    /**
+     * Trigger a deployment from the linked Git repository.
+     * Uses latest commit from the provided branch (or production branch fallback).
+     */
+    deployProjectFromGit(projectId: string, name: string, options?: {
+        branch?: string;
+        repoId?: string | number;
+        target?: 'production' | 'staging' | string;
+    }): Promise<VercelDeployment>;
+    /**
+     * Redeploy an existing Vercel project.
+     * Always deploys from the latest commit of the linked Git branch.
+     */
     redeployProject(projectId: string, name: string): Promise<VercelDeployment>;
     /** Get deployment details. */
     getDeployment(deploymentId: string): Promise<VercelDeployment>;

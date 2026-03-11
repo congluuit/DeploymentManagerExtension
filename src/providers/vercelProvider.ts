@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
+import { spawn } from 'child_process';
 import { VercelClient } from '../clients/vercelClient';
-import { ProjectInfo, VercelDeployment, VercelDeploymentEvent } from '../utils/types';
+import { SecretStorageManager } from '../utils/secretStorage';
+import { ProjectInfo, StorageKeys, VercelDeployment, VercelDeploymentEvent } from '../utils/types';
 import {
     ProviderAdapter,
     ProviderOperationContext,
@@ -25,7 +27,22 @@ class VercelProviderAdapter implements ProviderAdapter {
         const gitRepo = project.repoOwner && project.repoName
             ? { type: 'github', repo: `${project.repoOwner}/${project.repoName}` }
             : undefined;
-        await client.createProject(project.name, gitRepo);
+        const created = await client.createProject(project.name, gitRepo);
+
+        const deployment = await client.deployProjectFromGit(created.id, created.name, {
+            branch: project.branch,
+            target: 'production',
+        });
+
+        const deploymentId = deployment.uid || deployment.id;
+        if (!deploymentId) {
+            throw new Error('Vercel did not return a deployment ID after creating the project.');
+        }
+
+        const silentProgress: vscode.Progress<{ message?: string; increment?: number }> = {
+            report: () => undefined,
+        };
+        await this.waitForDeployment(client, deploymentId, created.name, silentProgress);
     }
 
     async listProjects(): Promise<ProviderProjectRef[]> {
@@ -57,37 +74,98 @@ class VercelProviderAdapter implements ProviderAdapter {
     }
 
     async redeploy(target: ProviderProjectRef, context: ProviderOperationContext): Promise<{ deploymentUrl?: string }> {
-        const client = new VercelClient();
-        this.reportStatus(context, {
-            phase: 'info',
-            message: 'Triggering Vercel redeploy request...',
-        });
-        const deployment = await client.redeployProject(target.id, target.name);
-        const deploymentId = deployment.uid || deployment.id;
-        if (!deploymentId) {
-            throw new Error('Unable to determine Vercel deployment ID after triggering redeploy.');
+        if (!context.projectPath) {
+            throw new Error('Workspace folder is required to run Vercel CLI deploy.');
+        }
+
+        const rawToken = await SecretStorageManager.getInstance().get(StorageKeys.VERCEL_TOKEN);
+        const token = rawToken?.trim().replace(/^['"]+|['"]+$/g, '');
+        if (!token) {
+            throw new Error('Vercel API token not found.');
         }
 
         this.reportStatus(context, {
-            phase: 'queued',
-            state: this.getState(deployment),
-            message: `Queued deployment ${deploymentId.slice(0, 8)}. Waiting for Vercel status...`,
-            sourceLabel: this.extractSourceLabel(deployment),
+            phase: 'info',
+            message: 'Starting Vercel CLI deploy...',
+            sourceLabel: '>_ vercel deploy',
         });
-        const completed = await this.waitForDeployment(
-            client,
-            deploymentId,
-            target.name,
-            context.progress,
-            context.onStatus
-        );
-        this.reportStatus(context, {
-            phase: 'ready',
-            state: this.getState(completed),
-            message: 'Finished. Deployment is ready.',
-            sourceLabel: this.extractSourceLabel(completed),
+
+        return new Promise((resolve, reject) => {
+            const isWin = process.platform === 'win32';
+            const command = `npx --yes vercel@latest deploy --prod --yes --token ${token}`;
+            const child = isWin
+                ? spawn('cmd.exe', ['/d', '/s', '/c', command], { cwd: context.projectPath, windowsHide: true })
+                : spawn('npx', ['--yes', 'vercel@latest', 'deploy', '--prod', '--yes', '--token', token], {
+                    cwd: context.projectPath,
+                });
+
+            let combinedOutput = '';
+            let deploymentUrl: string | undefined;
+            let hasReportedUploading = false;
+            let hasReportedDeploying = false;
+
+            child.stdout.on('data', (data) => {
+                const text = data.toString();
+                combinedOutput += text;
+
+                const urlMatch = text.match(/https:\/\/[^\s]+\.vercel\.app/);
+                if (urlMatch) {
+                    deploymentUrl = urlMatch[0].trim();
+                }
+
+                if (!hasReportedUploading) {
+                    hasReportedUploading = true;
+                    this.reportStatus(context, {
+                        phase: 'uploading',
+                        message: 'Uploading files...',
+                        sourceLabel: '>_ vercel deploy',
+                    });
+                }
+            });
+
+            child.stderr.on('data', (data) => {
+                const text = data.toString();
+                combinedOutput += text;
+
+                if (!hasReportedDeploying) {
+                    hasReportedDeploying = true;
+                    this.reportStatus(context, {
+                        phase: 'deploying',
+                        message: 'Building deployment...',
+                        sourceLabel: '>_ vercel deploy',
+                    });
+                }
+            });
+
+            child.on('close', (code) => {
+                if (code === 0) {
+                    this.reportStatus(context, {
+                        phase: 'ready',
+                        message: 'Deployment ready.',
+                        sourceLabel: '>_ vercel deploy',
+                    });
+
+                    if (!deploymentUrl) {
+                        const allUrls = combinedOutput.match(/https:\/\/[^\s]+\.vercel\.app/g);
+                        if (allUrls && allUrls.length > 0) {
+                            deploymentUrl = allUrls[allUrls.length - 1];
+                        }
+                    }
+                    resolve({ deploymentUrl });
+                } else {
+                    const compactOutput = combinedOutput.replace(/\r/g, '').trim();
+                    const maxErrorChars = 5000;
+                    const clipped = compactOutput.length > maxErrorChars
+                        ? `...[truncated]\n${compactOutput.slice(compactOutput.length - maxErrorChars)}`
+                        : compactOutput;
+                    reject(new Error(`Vercel CLI exited with code ${code}. Output: ${clipped}`));
+                }
+            });
+
+            child.on('error', (err) => {
+                reject(new Error(`Failed to start Vercel CLI: ${err.message}`));
+            });
         });
-        return { deploymentUrl: completed.url ? `https://${completed.url}` : undefined };
     }
 
     private async waitForDeployment(
@@ -128,7 +206,9 @@ class VercelProviderAdapter implements ProviderAdapter {
                 }
             } catch (error) {
                 const text = error instanceof Error ? error.message : String(error);
-                if (Date.now() - startedAt < 30000 && /404|not found/i.test(text)) {
+                const elapsedMs = Date.now() - startedAt;
+
+                if (elapsedMs < 30000 && /404|not found/i.test(text)) {
                     const message = `Waiting for deployment details... (${this.formatElapsed(startedAt)})`;
                     progress.report({ message });
                     onStatus?.({
@@ -140,6 +220,19 @@ class VercelProviderAdapter implements ProviderAdapter {
                     await this.sleep(POLL_INTERVAL_MS);
                     continue;
                 }
+
+                if (this.isTransientPollingError(text)) {
+                    const message = `Temporary Vercel API issue. Retrying... (${this.formatElapsed(startedAt)})`;
+                    progress.report({ message });
+                    onStatus?.({
+                        phase: 'info',
+                        message: 'Temporary Vercel API/network issue. Retrying status check...',
+                        timestamp: Date.now(),
+                    });
+                    await this.sleep(POLL_INTERVAL_MS);
+                    continue;
+                }
+
                 throw error;
             }
 
@@ -384,6 +477,10 @@ class VercelProviderAdapter implements ProviderAdapter {
         }
 
         return null;
+    }
+
+    private isTransientPollingError(message: string): boolean {
+        return /(fetch failed|network|timed out|timeout|econnreset|enotfound|eai_again|socket|und_err|429|503|504)/i.test(message);
     }
 
     private formatElapsed(startedAt: number): string {

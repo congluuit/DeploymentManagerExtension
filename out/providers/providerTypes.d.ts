@@ -22,6 +22,7 @@ export interface ProviderOperationContext {
         increment?: number;
     }>;
     onStatus?: (update: ProviderStatusUpdate) => void;
+    projectPath?: string;
 }
 export interface ProviderAdapter {
     readonly provider: ProviderName;

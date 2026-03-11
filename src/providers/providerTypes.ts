@@ -20,6 +20,7 @@ export interface ProviderStatusUpdate {
 export interface ProviderOperationContext {
     progress: vscode.Progress<{ message?: string; increment?: number }>;
     onStatus?: (update: ProviderStatusUpdate) => void;
+    projectPath?: string;
 }
 
 export interface ProviderAdapter {

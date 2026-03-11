@@ -155,7 +155,9 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
                             this.projectInfo.name,
                             this.projectInfo.repoUrl
                         );
-                        this.projectExistsOnCoolify = match !== null;
+                        if (match) {
+                            this.projectExistsOnCoolify = this.isCoolifyAppDeployed(match);
+                        }
                     }
                 } catch {
                     // Failed to fetch — keep empty list
@@ -172,7 +174,9 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
                             this.projectInfo.name,
                             this.projectInfo.repoUrl
                         );
-                        this.projectExistsOnNetlify = match !== null;
+                        if (match) {
+                            this.projectExistsOnNetlify = this.isNetlifySiteDeployed(match);
+                        }
                     }
                 } catch {
                     // Failed to fetch - keep empty list
@@ -454,8 +458,7 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
             return false;
         }
 
-        const state = this.getVercelState(latest);
-        if (state === 'ready') {
+        if (this.normalizePublicUrl(latest.url ? `https://${latest.url}` : null)) {
             return true;
         }
 
@@ -521,6 +524,48 @@ export class DashboardProvider implements vscode.TreeDataProvider<DashboardItem>
         } catch {
             return false;
         }
+    }
+
+    private isCoolifyAppDeployed(app: CoolifyApplication | null): boolean {
+        return !!this.normalizePublicUrl(app?.fqdn);
+    }
+
+    private isNetlifySiteDeployed(site: NetlifySite | null): boolean {
+        if (!site) {
+            return false;
+        }
+
+        const candidate =
+            site.ssl_url ||
+            site.url ||
+            site.deploy_url ||
+            site.published_deploy?.deploy_ssl_url ||
+            site.published_deploy?.ssl_url ||
+            site.published_deploy?.deploy_url ||
+            site.published_deploy?.url;
+
+        return !!this.normalizePublicUrl(candidate);
+    }
+
+    private normalizePublicUrl(value: string | null | undefined): string | null {
+        if (!value) {
+            return null;
+        }
+
+        const first = value.split(',')[0]?.trim();
+        if (!first) {
+            return null;
+        }
+
+        if (/^https?:\/\//i.test(first)) {
+            return first;
+        }
+
+        if (first.startsWith('//')) {
+            return `https:${first}`;
+        }
+
+        return `https://${first}`;
     }
 }
 

@@ -53,8 +53,8 @@ async function redeployProject(dashboardRefresh, options) {
     const refreshDashboard = options?.refreshDashboard ?? false;
     const onStatus = options?.onStatus;
     const detector = new projectDetector_1.ProjectDetector();
-    const projectInfo = options?.target ? null : await detector.detect();
-    if (!projectInfo && !options?.target) {
+    const projectInfo = await detector.detect();
+    if (!projectInfo) {
         const message = 'No workspace folder is open. Please open a project first.';
         if (notify) {
             vscode.window.showErrorMessage(message);
@@ -131,7 +131,7 @@ async function redeployProject(dashboardRefresh, options) {
                 message: `Starting redeploy on ${target.provider}...`,
                 timestamp: Date.now(),
             });
-            const result = await adapter.redeploy({ id: target.id, name: target.name }, { progress, onStatus });
+            const result = await adapter.redeploy({ id: target.id, name: target.name }, { progress, onStatus, projectPath: projectInfo?.folderPath });
             onStatus?.({
                 phase: 'ready',
                 message: `Redeploy finished on ${target.provider}.`,
